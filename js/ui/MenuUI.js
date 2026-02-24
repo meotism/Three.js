@@ -40,8 +40,8 @@ export class MenuUI {
             <div class="donate-modal-content">
                 <h2>☕ Buy Me Coffee</h2>
                 <p>If you enjoy this game, consider supporting the developer!</p>
-                <img src="assets/qr-donate.png" alt="Donate QR Code" onerror="this.style.display='none';this.nextElementSibling.style.display='block';">
-                <p style="display:none;color:rgba(255,255,255,0.4);font-size:12px;">QR code image not found</p>
+                <img src="./assets/qr-donate.png" alt="Donate QR Code" class="donate-qr-img" onerror="this.style.display='none';this.nextElementSibling.style.display='block';">
+                <p style="display:none;color:rgba(255,255,255,0.4);font-size:12px;">Place qr-donate.png in assets/ folder</p>
                 <p style="font-size:13px;color:rgba(255,255,255,0.5);">Scan with MoMo or banking app</p>
                 <button class="donate-close-btn" id="donate-close">Close</button>
             </div>
