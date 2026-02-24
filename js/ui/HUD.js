@@ -1,49 +1,61 @@
+const PLAYER_COLOR_HEX = ['#42a5f5', '#ef5350', '#66bb6a', '#ffa726'];
+const PLAYER_NAMES = ['P1', 'P2', 'P3', 'P4'];
+
 export class HUD {
     constructor(container) {
         this.container = container;
         this.element = null;
     }
 
-    show(round, maxRounds, p1Score, p2Score) {
+    show(round, maxRounds, scores, players) {
         this.element = document.createElement('div');
         this.element.className = 'hud';
-        this.element.innerHTML = `
-            <div class="hud-player p1">
-                <div class="hud-player-icon">P1</div>
-                <div class="hud-stats">
-                    <div class="hud-stat"><span class="hud-stat-icon">💣</span><span id="p1-bombs">1</span></div>
-                    <div class="hud-stat"><span class="hud-stat-icon">🔥</span><span id="p1-range">1</span></div>
-                    <div class="hud-stat"><span class="hud-stat-icon">⚡</span><span id="p1-speed">1.0</span></div>
+
+        let leftHTML = '';
+        let rightHTML = '';
+
+        for (let i = 0; i < 4; i++) {
+            const isNPC = players[i].isNPC;
+            const badge = isNPC ? '<span class="npc-badge">AI</span>' : '';
+            const side = i < 2 ? 'left' : 'right';
+            const playerHTML = `
+                <div class="hud-player p${i + 1}">
+                    <div class="hud-player-icon">${PLAYER_NAMES[i]}${badge}</div>
+                    <div class="hud-stats">
+                        <div class="hud-stat"><span class="hud-stat-icon">💣</span><span id="p${i + 1}-bombs">1</span></div>
+                        <div class="hud-stat"><span class="hud-stat-icon">🔥</span><span id="p${i + 1}-range">1</span></div>
+                        <div class="hud-stat"><span class="hud-stat-icon">⚡</span><span id="p${i + 1}-speed">1.0</span></div>
+                    </div>
                 </div>
-            </div>
+            `;
+            if (side === 'left') leftHTML += playerHTML;
+            else rightHTML += playerHTML;
+        }
+
+        const scoreHTML = scores.map((s, i) =>
+            `<span class="p${i + 1}-score">${s}</span>`
+        ).join('<span class="score-divider">·</span>');
+
+        this.element.innerHTML = `
+            <div class="hud-side hud-left">${leftHTML}</div>
             <div class="hud-center">
                 <div class="hud-round">Round ${round}/${maxRounds}</div>
-                <div class="hud-score">
-                    <span class="p1-score">${p1Score}</span>
-                    <span class="score-divider">-</span>
-                    <span class="p2-score">${p2Score}</span>
-                </div>
+                <div class="hud-score">${scoreHTML}</div>
             </div>
-            <div class="hud-player p2">
-                <div class="hud-stats">
-                    <div class="hud-stat"><span class="hud-stat-icon">💣</span><span id="p2-bombs">1</span></div>
-                    <div class="hud-stat"><span class="hud-stat-icon">🔥</span><span id="p2-range">1</span></div>
-                    <div class="hud-stat"><span class="hud-stat-icon">⚡</span><span id="p2-speed">1.0</span></div>
-                </div>
-                <div class="hud-player-icon">P2</div>
-            </div>
+            <div class="hud-side hud-right">${rightHTML}</div>
         `;
         this.container.appendChild(this.element);
     }
 
-    update(p1, p2) {
+    updateStats(players) {
         const el = (id) => document.getElementById(id);
-        if (el('p1-bombs')) el('p1-bombs').textContent = p1.maxBombs;
-        if (el('p1-range')) el('p1-range').textContent = p1.bombRange;
-        if (el('p1-speed')) el('p1-speed').textContent = (p1.speed / 4).toFixed(1);
-        if (el('p2-bombs')) el('p2-bombs').textContent = p2.maxBombs;
-        if (el('p2-range')) el('p2-range').textContent = p2.bombRange;
-        if (el('p2-speed')) el('p2-speed').textContent = (p2.speed / 4).toFixed(1);
+        for (let i = 0; i < players.length; i++) {
+            const p = players[i].player;
+            const n = i + 1;
+            if (el(`p${n}-bombs`)) el(`p${n}-bombs`).textContent = p.maxBombs;
+            if (el(`p${n}-range`)) el(`p${n}-range`).textContent = p.bombRange;
+            if (el(`p${n}-speed`)) el(`p${n}-speed`).textContent = (p.speed / 4).toFixed(1);
+        }
     }
 
     hide() {

@@ -11,12 +11,16 @@ import { PowerUp, DROP_CHANCE } from './entities/PowerUp.js';
 import { ParticleSystem } from './effects/ParticleSystem.js';
 import { ShakeEffect } from './effects/ShakeEffect.js';
 import { MenuUI } from './ui/MenuUI.js';
+import { ModeSelectUI } from './ui/ModeSelectUI.js';
 import { MapSelectUI } from './ui/MapSelectUI.js';
 import { HUD } from './ui/HUD.js';
 import { RoundOverUI } from './ui/RoundOverUI.js';
+import { AIInput } from './ai/AIInput.js';
+import { AIBrain } from './ai/AIBrain.js';
 
 const STATES = {
     MENU: 'MENU',
+    MODE_SELECT: 'MODE_SELECT',
     MAP_SELECT: 'MAP_SELECT',
     COUNTDOWN: 'COUNTDOWN',
     PLAYING: 'PLAYING',
@@ -27,6 +31,10 @@ const STATES = {
 const MAX_ROUNDS = 5;
 const WINS_NEEDED = 3;
 
+const AI_KEYS = { UP: 'UP', DOWN: 'DOWN', LEFT: 'LEFT', RIGHT: 'RIGHT', BOMB: 'BOMB' };
+const PLAYER_COLORS = [0x42a5f5, 0xef5350, 0x66bb6a, 0xffa726];
+const SPAWN_KEYS = ['p1', 'p2', 'p3', 'p4'];
+
 export class Game {
     constructor() {
         this.sceneManager = new SceneManager();
@@ -35,6 +43,7 @@ export class Game {
         this.uiContainer = document.getElementById('ui-layer');
 
         this.menuUI = new MenuUI(this.uiContainer);
+        this.modeSelectUI = new ModeSelectUI(this.uiContainer);
         this.mapSelectUI = new MapSelectUI(this.uiContainer);
         this.hud = new HUD(this.uiContainer);
         this.roundOverUI = new RoundOverUI(this.uiContainer);
@@ -49,12 +58,13 @@ export class Game {
         // Game state
         this.selectedMapIndex = 0;
         this.currentRound = 0;
-        this.p1Score = 0;
-        this.p2Score = 0;
+        this.gameMode = null; // 'single' or 'double'
+        this.scores = [0, 0, 0, 0];
+
+        // Players: array of { player, isNPC, brain, aiInput }
+        this.players = [];
 
         // Entities
-        this.player1 = null;
-        this.player2 = null;
         this.bombs = [];
         this.explosions = [];
         this.powerUps = [];
@@ -94,6 +104,9 @@ export class Game {
             case STATES.MENU:
                 this.setupMenu();
                 break;
+            case STATES.MODE_SELECT:
+                this.setupModeSelect();
+                break;
             case STATES.MAP_SELECT:
                 this.setupMapSelect();
                 break;
@@ -114,6 +127,7 @@ export class Game {
 
     cleanupState() {
         this.menuUI.hide();
+        this.modeSelectUI.hide();
         this.mapSelectUI.hide();
         this.hud.hide();
         this.roundOverUI.hide();
@@ -125,9 +139,9 @@ export class Game {
 
     // ============ MENU ============
     setupMenu() {
-        this.p1Score = 0;
-        this.p2Score = 0;
+        this.scores = [0, 0, 0, 0];
         this.currentRound = 0;
+        this.players = [];
 
         this.sceneManager.clearScene();
         this.setupMenuBackground();
@@ -137,7 +151,7 @@ export class Game {
         this.menuUI.onStart = () => {
             this.audio.init();
             this.audio.play('menu_select');
-            this.setState(STATES.MAP_SELECT);
+            this.setState(STATES.MODE_SELECT);
         };
     }
 
@@ -177,6 +191,25 @@ export class Game {
         }
     }
 
+    // ============ MODE SELECT ============
+    setupModeSelect() {
+        this.modeSelectUI.show();
+        this.modeSelectUI.onSelectSingle = () => {
+            this.audio.play('menu_select');
+            this.gameMode = 'single';
+            this.setState(STATES.MAP_SELECT);
+        };
+        this.modeSelectUI.onSelectDouble = () => {
+            this.audio.play('menu_select');
+            this.gameMode = 'double';
+            this.setState(STATES.MAP_SELECT);
+        };
+        this.modeSelectUI.onBack = () => {
+            this.audio.play('menu_select');
+            this.setState(STATES.MENU);
+        };
+    }
+
     // ============ MAP SELECT ============
     setupMapSelect() {
         this.mapSelectUI.show();
@@ -184,19 +217,25 @@ export class Game {
             this.audio.play('menu_select');
             this.selectedMapIndex = index;
             this.currentRound = 0;
-            this.p1Score = 0;
-            this.p2Score = 0;
+            this.scores = [0, 0, 0, 0];
             this.startNewRound();
         };
         this.mapSelectUI.onBack = () => {
             this.audio.play('menu_select');
-            this.setState(STATES.MENU);
+            this.setState(STATES.MODE_SELECT);
         };
     }
 
     // ============ ROUND SETUP ============
     startNewRound() {
         this.currentRound++;
+
+        // Remove player models from scene BEFORE clearScene() to prevent disposal
+        for (const entry of this.players) {
+            if (entry.player.model.parent) {
+                entry.player.model.parent.remove(entry.player.model);
+            }
+        }
 
         // Clear everything
         this.sceneManager.clearScene();
@@ -218,19 +257,29 @@ export class Game {
         // Position camera
         this.sceneManager.positionCameraForMap(mapDef.cols, mapDef.rows);
 
-        // Spawn players
+        // Spawn positions
         const spawns = GridSystem.getSpawnPositions(mapDef);
+        const humanCount = this.gameMode === 'single' ? 1 : 2;
+        const KEY_SETS = [P1_KEYS, P2_KEYS];
 
-        if (!this.player1) {
-            this.player1 = new Player(1, 0x42a5f5, P1_KEYS);
-            this.player2 = new Player(2, 0xef5350, P2_KEYS);
+        // Create players on first round, reuse on subsequent
+        if (this.players.length === 0) {
+            for (let i = 0; i < 4; i++) {
+                const isNPC = i >= humanCount;
+                const keys = isNPC ? AI_KEYS : KEY_SETS[i];
+                const player = new Player(i + 1, PLAYER_COLORS[i], keys);
+                const brain = isNPC ? new AIBrain(i + 1) : null;
+                const aiInput = brain ? brain.aiInput : null;
+                this.players.push({ player, isNPC, brain, aiInput });
+            }
         }
 
-        this.player1.spawn(spawns.p1.x, spawns.p1.z);
-        this.player2.spawn(spawns.p2.x, spawns.p2.z);
-
-        this.sceneManager.scene.add(this.player1.model);
-        this.sceneManager.scene.add(this.player2.model);
+        // Spawn all players
+        for (let i = 0; i < 4; i++) {
+            const spawn = spawns[SPAWN_KEYS[i]];
+            this.players[i].player.spawn(spawn.x, spawn.z);
+            this.sceneManager.scene.add(this.players[i].player.model);
+        }
 
         this.roundEndDelay = 0;
         this.setState(STATES.COUNTDOWN);
@@ -239,12 +288,13 @@ export class Game {
     // ============ COUNTDOWN ============
     setupCountdown() {
         this.countdownTimer = 3.5;
+        this.lastCountdownNum = -1;
         this.countdownElement = document.createElement('div');
         this.countdownElement.className = 'countdown-overlay';
         this.uiContainer.appendChild(this.countdownElement);
 
-        this.hud.show(this.currentRound, MAX_ROUNDS, this.p1Score, this.p2Score);
-        this.hud.update(this.player1, this.player2);
+        this.hud.show(this.currentRound, MAX_ROUNDS, this.scores, this.players);
+        this.hud.updateStats(this.players);
     }
 
     updateCountdown(delta) {
@@ -252,32 +302,47 @@ export class Game {
         const num = Math.ceil(this.countdownTimer);
 
         if (num > 0 && num <= 3) {
-            this.countdownElement.innerHTML = `<div class="countdown-number">${num}</div>`;
-            if (this.countdownTimer + delta >= num && this.countdownTimer < num) {
+            if (num !== this.lastCountdownNum) {
+                this.lastCountdownNum = num;
+                this.countdownElement.innerHTML = `<div class="countdown-number">${num}</div>`;
                 this.audio.play('countdown');
             }
         } else if (num <= 0) {
-            this.countdownElement.innerHTML = `<div class="countdown-go">GO!</div>`;
-            if (this.countdownTimer + delta >= 0 && this.countdownTimer < 0) {
+            if (this.lastCountdownNum !== 0) {
+                this.lastCountdownNum = 0;
+                this.countdownElement.innerHTML = `<div class="countdown-go">GO!</div>`;
                 this.audio.play('go');
             }
         }
 
         if (this.countdownTimer <= -0.6) {
             this.setState(STATES.PLAYING);
-            this.hud.show(this.currentRound, MAX_ROUNDS, this.p1Score, this.p2Score);
+            this.hud.show(this.currentRound, MAX_ROUNDS, this.scores, this.players);
         }
     }
 
     // ============ PLAYING ============
     updatePlaying(delta) {
-        // Update players
-        const bombAction1 = this.player1.update(delta, this.input, this.gridSystem);
-        const bombAction2 = this.player2.update(delta, this.input, this.gridSystem);
+        // Compute shared danger map once for all AI bots (optimization)
+        const allPlayers = this.players.map(e => e.player);
+        let sharedDangerMap = null;
+        for (const entry of this.players) {
+            if (entry.isNPC && entry.player.alive && entry.brain) {
+                if (!sharedDangerMap) {
+                    sharedDangerMap = entry.brain.dangerMap;
+                    sharedDangerMap.compute(this.gridSystem, this.bombs, this.explosions);
+                }
+                entry.brain.update(delta, entry.player, allPlayers,
+                    this.gridSystem, this.bombs, this.explosions, this.powerUps, this.blocks, sharedDangerMap);
+            }
+        }
 
-        // Handle bomb placement
-        if (bombAction1) this.placeBomb(this.player1, bombAction1.gridX, bombAction1.gridZ);
-        if (bombAction2) this.placeBomb(this.player2, bombAction2.gridX, bombAction2.gridZ);
+        // Update all players
+        for (const entry of this.players) {
+            const inputSource = entry.isNPC ? entry.aiInput : this.input;
+            const bombAction = entry.player.update(delta, inputSource, this.gridSystem);
+            if (bombAction) this.placeBomb(entry.player, bombAction.gridX, bombAction.gridZ);
+        }
 
         // Update bombs
         for (let i = this.bombs.length - 1; i >= 0; i--) {
@@ -314,13 +379,11 @@ export class Game {
             pu.update(delta);
         }
 
-        // Check player-powerup collisions
-        this.checkPowerUpPickup(this.player1);
-        this.checkPowerUpPickup(this.player2);
-
-        // Check player-explosion collisions
-        this.checkExplosionDamage(this.player1);
-        this.checkExplosionDamage(this.player2);
+        // Check collisions for all players
+        for (const entry of this.players) {
+            this.checkPowerUpPickup(entry.player);
+            this.checkExplosionDamage(entry.player);
+        }
 
         // Update particles
         this.particles.update(delta);
@@ -329,7 +392,7 @@ export class Game {
         this.shakeEffect.update(delta);
 
         // Update HUD
-        this.hud.update(this.player1, this.player2);
+        this.hud.updateStats(this.players);
 
         // Check round end
         this.checkRoundEnd(delta);
@@ -355,8 +418,8 @@ export class Game {
         this.gridSystem.removeBomb(bomb.gridX, bomb.gridZ);
 
         // Notify owner
-        const owner = bomb.ownerId === 1 ? this.player1 : this.player2;
-        owner.onBombExploded();
+        const ownerEntry = this.players.find(e => e.player.id === bomb.ownerId);
+        if (ownerEntry) ownerEntry.player.onBombExploded();
 
         // Create explosion
         const explosion = new Explosion(bomb.gridX, bomb.gridZ, bomb.range, this.gridSystem);
@@ -436,34 +499,31 @@ export class Game {
     }
 
     checkRoundEnd(delta) {
-        if (!this.player1.alive && !this.player2.alive) {
-            // Both dead — draw, no score change
+        const alivePlayers = this.players.filter(e => e.player.alive);
+        const aliveHumans = this.players.filter(e => !e.isNPC && e.player.alive);
+
+        // Round ends when: <=1 player alive OR all human players are dead
+        const shouldEnd = alivePlayers.length <= 1 || aliveHumans.length === 0;
+
+        if (shouldEnd) {
             this.roundEndDelay += delta;
             if (this.roundEndDelay > 1.5) {
-                this.setState(STATES.ROUND_OVER);
-                this._roundWinner = 0;
-            }
-        } else if (!this.player1.alive) {
-            this.roundEndDelay += delta;
-            if (this.roundEndDelay > 1.5) {
-                this.p2Score++;
-                this._roundWinner = 2;
-                this.checkGameOver();
-            }
-        } else if (!this.player2.alive) {
-            this.roundEndDelay += delta;
-            if (this.roundEndDelay > 1.5) {
-                this.p1Score++;
-                this._roundWinner = 1;
+                if (alivePlayers.length >= 1) {
+                    // Last standing player (or strongest surviving bot) wins
+                    const winnerId = alivePlayers[0].player.id;
+                    this.scores[winnerId - 1]++;
+                    this._roundWinner = winnerId;
+                } else {
+                    this._roundWinner = 0; // draw
+                }
                 this.checkGameOver();
             }
         }
     }
 
     checkGameOver() {
-        if (this.p1Score >= WINS_NEEDED) {
-            this.setState(STATES.GAME_OVER);
-        } else if (this.p2Score >= WINS_NEEDED) {
+        const maxScore = Math.max(...this.scores);
+        if (maxScore >= WINS_NEEDED) {
             this.setState(STATES.GAME_OVER);
         } else {
             this.setState(STATES.ROUND_OVER);
@@ -474,8 +534,7 @@ export class Game {
     setupRoundOver() {
         this.roundOverUI.showRoundOver(
             this._roundWinner || 0,
-            this.p1Score,
-            this.p2Score,
+            this.scores,
             this.currentRound,
             MAX_ROUNDS
         );
@@ -487,14 +546,15 @@ export class Game {
 
     // ============ GAME OVER ============
     setupGameOver() {
-        const winner = this.p1Score >= WINS_NEEDED ? 1 : 2;
+        const maxScore = Math.max(...this.scores);
+        const winnerId = this.scores.indexOf(maxScore) + 1;
         this.audio.play('win');
-        this.roundOverUI.showGameOver(winner, this.p1Score, this.p2Score);
+        this.roundOverUI.showGameOver(winnerId, this.scores);
         this.roundOverUI.onRematch = () => {
             this.audio.play('menu_select');
-            this.p1Score = 0;
-            this.p2Score = 0;
+            this.scores = [0, 0, 0, 0];
             this.currentRound = 0;
+            this.players = [];
             this.startNewRound();
         };
         this.roundOverUI.onMenu = () => {
@@ -506,6 +566,13 @@ export class Game {
     // ============ UPDATE & RENDER ============
     update(delta) {
         this.input.update();
+
+        // Update AI inputs
+        for (const entry of this.players) {
+            if (entry.isNPC && entry.aiInput) {
+                entry.aiInput.update();
+            }
+        }
 
         switch (this.state) {
             case STATES.MENU:

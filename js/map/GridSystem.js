@@ -9,7 +9,8 @@ export class GridSystem {
         // Normalize spawn cells to empty
         for (let z = 0; z < rows; z++) {
             for (let x = 0; x < cols; x++) {
-                if (this.grid[z][x] === CELL.SPAWN_P1 || this.grid[z][x] === CELL.SPAWN_P2) {
+                if (this.grid[z][x] === CELL.SPAWN_P1 || this.grid[z][x] === CELL.SPAWN_P2 ||
+                    this.grid[z][x] === CELL.SPAWN_P3 || this.grid[z][x] === CELL.SPAWN_P4) {
                     this.grid[z][x] = CELL.EMPTY;
                 }
             }
@@ -61,16 +62,20 @@ export class GridSystem {
     }
 
     static getSpawnPositions(mapDef) {
-        const spawns = { p1: [], p2: [] };
+        const spawns = { p1: null, p2: null, p3: null, p4: null };
         for (let z = 0; z < mapDef.rows; z++) {
             for (let x = 0; x < mapDef.cols; x++) {
-                if (mapDef.grid[z][x] === CELL.SPAWN_P1) spawns.p1.push({ x, z });
-                if (mapDef.grid[z][x] === CELL.SPAWN_P2) spawns.p2.push({ x, z });
+                if (mapDef.grid[z][x] === CELL.SPAWN_P1) spawns.p1 = { x, z };
+                if (mapDef.grid[z][x] === CELL.SPAWN_P2) spawns.p2 = { x, z };
+                if (mapDef.grid[z][x] === CELL.SPAWN_P3) spawns.p3 = { x, z };
+                if (mapDef.grid[z][x] === CELL.SPAWN_P4) spawns.p4 = { x, z };
             }
         }
         return {
-            p1: spawns.p1[0] || { x: 1, z: 1 },
-            p2: spawns.p2[0] || { x: mapDef.cols - 2, z: 1 },
+            p1: spawns.p1 || { x: 1, z: 1 },
+            p2: spawns.p2 || { x: mapDef.cols - 2, z: 1 },
+            p3: spawns.p3 || { x: 1, z: mapDef.rows - 2 },
+            p4: spawns.p4 || { x: mapDef.cols - 2, z: mapDef.rows - 2 },
         };
     }
 }

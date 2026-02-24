@@ -1,6 +1,7 @@
 import { Game } from './Game.js';
 
 const game = new Game();
+window._game = game;
 game.init();
 
 const clock = new THREE.Clock();

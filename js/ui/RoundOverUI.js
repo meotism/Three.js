@@ -1,3 +1,5 @@
+const PLAYER_COLOR_HEX = ['#42a5f5', '#ef5350', '#66bb6a', '#ffa726'];
+
 export class RoundOverUI {
     constructor(container) {
         this.container = container;
@@ -7,21 +9,28 @@ export class RoundOverUI {
         this.onMenu = null;
     }
 
-    showRoundOver(winnerId, p1Score, p2Score, round, maxRounds) {
+    _winClass(winnerId) {
+        if (winnerId === 0) return 'draw';
+        return `p${winnerId}-win`;
+    }
+
+    _scoreHTML(scores) {
+        return scores.map((s, i) =>
+            `<span class="p${i + 1}-score">${s}</span>`
+        ).join('<span class="score-divider" style="color:rgba(255,255,255,0.3);margin:0 8px;">·</span>');
+    }
+
+    showRoundOver(winnerId, scores, round, maxRounds) {
         this.element = document.createElement('div');
         this.element.className = 'result-screen';
 
-        const winClass = winnerId === 1 ? 'p1-win' : winnerId === 2 ? 'p2-win' : 'draw';
+        const winClass = this._winClass(winnerId);
         const winText = winnerId === 0 ? 'DRAW!' : `PLAYER ${winnerId} WINS!`;
 
         this.element.innerHTML = `
             <div class="result-title ${winClass}">${winText}</div>
             <div class="result-subtitle">Round ${round} of ${maxRounds}</div>
-            <div class="result-score">
-                <span class="p1-score">${p1Score}</span>
-                <span class="score-divider" style="color:rgba(255,255,255,0.3);margin:0 12px;">-</span>
-                <span class="p2-score">${p2Score}</span>
-            </div>
+            <div class="result-score">${this._scoreHTML(scores)}</div>
             <div class="result-buttons">
                 <button class="menu-btn primary" id="btn-next-round">NEXT ROUND</button>
             </div>
@@ -33,21 +42,17 @@ export class RoundOverUI {
         });
     }
 
-    showGameOver(winnerId, p1Score, p2Score) {
+    showGameOver(winnerId, scores) {
         this.element = document.createElement('div');
         this.element.className = 'result-screen';
 
-        const winClass = winnerId === 1 ? 'p1-win' : 'p2-win';
+        const winClass = this._winClass(winnerId);
         const winText = `PLAYER ${winnerId} WINS THE GAME!`;
 
         this.element.innerHTML = `
             <div class="result-title ${winClass}">${winText}</div>
             <div class="result-subtitle">Final Score</div>
-            <div class="result-score">
-                <span class="p1-score">${p1Score}</span>
-                <span class="score-divider" style="color:rgba(255,255,255,0.3);margin:0 12px;">-</span>
-                <span class="p2-score">${p2Score}</span>
-            </div>
+            <div class="result-score">${this._scoreHTML(scores)}</div>
             <div class="result-buttons">
                 <button class="menu-btn primary" id="btn-rematch">REMATCH</button>
                 <button class="menu-btn" id="btn-menu">MAIN MENU</button>

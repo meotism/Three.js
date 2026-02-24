@@ -83,6 +83,12 @@ export class MapSelectUI {
                     case CELL.SPAWN_P2:
                         ctx.fillStyle = '#ef5350';
                         break;
+                    case CELL.SPAWN_P3:
+                        ctx.fillStyle = '#66bb6a';
+                        break;
+                    case CELL.SPAWN_P4:
+                        ctx.fillStyle = '#ffa726';
+                        break;
                     default:
                         ctx.fillStyle = '#' + map.theme.floorColor.toString(16).padStart(6, '0');
                 }

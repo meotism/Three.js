@@ -22,11 +22,17 @@ const GAME_KEYS = new Set([
 export class InputManager {
     constructor() {
         this.keys = {};
-        this.prevKeys = {};
+        // Track keys pressed between frames (only first press, not held)
+        this._pressedThisFrame = new Set();
+        this._prevPressed = new Set();
 
         window.addEventListener('keydown', (e) => {
             if (GAME_KEYS.has(e.code)) {
                 e.preventDefault();
+            }
+            if (!this.keys[e.code]) {
+                // Only record the first keydown (not auto-repeat)
+                this._pressedThisFrame.add(e.code);
             }
             this.keys[e.code] = true;
         });
@@ -36,20 +42,24 @@ export class InputManager {
         });
     }
 
+    // Called at start of each frame — moves pressed set forward
     update() {
-        this.prevKeys = { ...this.keys };
+        this._prevPressed = new Set(this._pressedThisFrame);
+        this._pressedThisFrame.clear();
     }
 
     isKeyDown(code) {
         return !!this.keys[code];
     }
 
+    // True only on the frame the key was first pressed (not held)
     wasKeyPressed(code) {
-        return !!this.keys[code] && !this.prevKeys[code];
+        return this._prevPressed.has(code);
     }
 
     reset() {
         this.keys = {};
-        this.prevKeys = {};
+        this._pressedThisFrame.clear();
+        this._prevPressed.clear();
     }
 }
