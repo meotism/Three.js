@@ -42,6 +42,10 @@ export class Game {
         this.input = new InputManager();
         this._isMobile = isMobileDevice();
         this.touchControls = this._isMobile ? new TouchControls() : null;
+        if (this._isMobile) {
+            this.sceneManager.camera.fov = 60;
+            this.sceneManager.camera.updateProjectionMatrix();
+        }
         this.audio = new AudioManager();
         this.uiContainer = document.getElementById('ui-layer');
 
@@ -398,6 +402,7 @@ export class Game {
         this.particles.update(delta);
 
         // Update camera shake
+        if (this._isMobile) this._updateMobileCamera();
         this.shakeEffect.update(delta);
 
         // Update HUD
@@ -570,6 +575,34 @@ export class Game {
             this.audio.play('menu_select');
             this.setState(STATES.MENU);
         };
+    }
+
+    // ============ MOBILE CAMERA FOLLOW ============
+    _updateMobileCamera() {
+        const FOLLOW_HEIGHT = 7;   // units above ground
+        const FOLLOW_Z_BACK = 5;   // units behind player
+        const LERP = 0.1;          // per-frame lerp factor
+
+        const p1 = this.players[0]?.player;
+        if (!p1 || !p1.alive) return;
+
+        const px = p1.model.position.x;
+        const pz = p1.model.position.z;
+        const camera = this.sceneManager.camera;
+
+        // Lerp camera toward follow target
+        camera.position.x += (px - camera.position.x) * LERP;
+        camera.position.y += (FOLLOW_HEIGHT - camera.position.y) * LERP;
+        camera.position.z += (pz + FOLLOW_Z_BACK - camera.position.z) * LERP;
+
+        // Always look at player
+        camera.lookAt(px, 0, pz);
+
+        // Keep ShakeEffect's basePosition in sync so shake applies on top
+        // of the current follow position, not a stale snapshot
+        if (this.shakeEffect.basePosition) {
+            this.shakeEffect.basePosition.copy(camera.position);
+        }
     }
 
     // ============ UPDATE & RENDER ============
