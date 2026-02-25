@@ -17,6 +17,7 @@ import { HUD } from './ui/HUD.js';
 import { RoundOverUI } from './ui/RoundOverUI.js';
 import { AIInput } from './ai/AIInput.js';
 import { AIBrain } from './ai/AIBrain.js';
+import { TouchControls, isMobileDevice } from './ui/TouchControls.js';
 
 const STATES = {
     MENU: 'MENU',
@@ -39,6 +40,8 @@ export class Game {
     constructor() {
         this.sceneManager = new SceneManager();
         this.input = new InputManager();
+        this._isMobile = isMobileDevice();
+        this.touchControls = this._isMobile ? new TouchControls() : null;
         this.audio = new AudioManager();
         this.uiContainer = document.getElementById('ui-layer');
 
@@ -115,6 +118,7 @@ export class Game {
                 break;
             case STATES.PLAYING:
                 // Already set up during countdown
+                if (this.touchControls) this.touchControls.show(this.uiContainer);
                 break;
             case STATES.ROUND_OVER:
                 this.setupRoundOver();
@@ -135,6 +139,7 @@ export class Game {
             this.countdownElement.remove();
             this.countdownElement = null;
         }
+        if (this.touchControls) this.touchControls.hide();
     }
 
     // ============ MENU ============
@@ -193,7 +198,7 @@ export class Game {
 
     // ============ MODE SELECT ============
     setupModeSelect() {
-        this.modeSelectUI.show();
+        this.modeSelectUI.show(this._isMobile);
         this.modeSelectUI.onSelectSingle = () => {
             this.audio.play('menu_select');
             this.gameMode = 'single';
@@ -266,7 +271,9 @@ export class Game {
         if (this.players.length === 0) {
             for (let i = 0; i < 4; i++) {
                 const isNPC = i >= humanCount;
-                const keys = isNPC ? AI_KEYS : KEY_SETS[i];
+                const keys = isNPC ? AI_KEYS
+                    : (this._isMobile && i === 0) ? AI_KEYS
+                    : KEY_SETS[i];
                 const player = new Player(i + 1, PLAYER_COLORS[i], keys);
                 const brain = isNPC ? new AIBrain(i + 1) : null;
                 const aiInput = brain ? brain.aiInput : null;
@@ -339,7 +346,9 @@ export class Game {
 
         // Update all players
         for (const entry of this.players) {
-            const inputSource = entry.isNPC ? entry.aiInput : this.input;
+            const inputSource = entry.isNPC ? entry.aiInput
+                : (this._isMobile && entry.player.id === 1) ? this.touchControls
+                : this.input;
             const bombAction = entry.player.update(delta, inputSource, this.gridSystem);
             if (bombAction) this.placeBomb(entry.player, bombAction.gridX, bombAction.gridZ);
         }
@@ -566,6 +575,7 @@ export class Game {
     // ============ UPDATE & RENDER ============
     update(delta) {
         this.input.update();
+        if (this.touchControls) this.touchControls.update();
 
         // Update AI inputs
         for (const entry of this.players) {

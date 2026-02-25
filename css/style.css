@@ -704,3 +704,112 @@ canvas { display: block; }
     .mode-cards { flex-direction: column; gap: 16px; }
     .mode-card { width: 240px; }
 }
+
+/* ============ TOUCH CONTROLS ============ */
+.touch-controls {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 16px 20px;
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+    pointer-events: none;
+    z-index: 20;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.touch-dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 60px);
+    grid-template-rows: repeat(3, 60px);
+    gap: 4px;
+    pointer-events: auto;
+}
+
+.touch-up    { grid-column: 2; grid-row: 1; }
+.touch-left  { grid-column: 1; grid-row: 2; }
+.touch-center{ grid-column: 2; grid-row: 2; background: transparent !important; border: none !important; pointer-events: none; }
+.touch-right { grid-column: 3; grid-row: 2; }
+.touch-down  { grid-column: 2; grid-row: 3; }
+
+.touch-btn {
+    width: 60px;
+    height: 60px;
+    border-radius: 10px;
+    border: 2px solid rgba(255,255,255,0.25);
+    background: rgba(0,0,0,0.5);
+    color: #fff;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    backdrop-filter: blur(6px);
+    pointer-events: auto;
+    transition: background 0.08s, transform 0.08s;
+    cursor: pointer;
+}
+
+.touch-btn.pressed {
+    background: rgba(255,140,0,0.55);
+    border-color: #ff8c00;
+    transform: scale(0.88);
+}
+
+.touch-bomb {
+    width: 80px;
+    height: 80px;
+    font-size: 32px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,69,0,0.7);
+    background: rgba(200,30,0,0.4);
+    pointer-events: auto;
+    align-self: flex-end;
+}
+
+.touch-bomb.pressed {
+    background: rgba(255,69,0,0.75);
+    transform: scale(0.88);
+}
+
+/* Push HUD above touch controls on touch devices */
+@media (pointer: coarse) {
+    .hud { bottom: 210px; }
+}
+
+/* Mode card disabled on mobile */
+.mode-card-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    filter: grayscale(60%);
+    pointer-events: auto;
+}
+
+.mode-card-disabled:hover {
+    transform: none !important;
+    box-shadow: none !important;
+    background: rgba(255,255,255,0.05) !important;
+    border-color: rgba(255,255,255,0.1) !important;
+}
+
+/* Mobile toast notification */
+.mobile-toast {
+    position: fixed;
+    bottom: 40%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.88);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    pointer-events: none;
+    z-index: 300;
+    animation: fadeOut 2s ease forwards;
+    white-space: nowrap;
+}

@@ -7,7 +7,7 @@ export class ModeSelectUI {
         this.onBack = null;
     }
 
-    show() {
+    show(isMobile = false) {
         this.element = document.createElement('div');
         this.element.className = 'mode-select-screen';
 
@@ -48,9 +48,24 @@ export class ModeSelectUI {
         document.getElementById('mode-single').addEventListener('click', () => {
             if (this.onSelectSingle) this.onSelectSingle();
         });
-        document.getElementById('mode-double').addEventListener('click', () => {
-            if (this.onSelectDouble) this.onSelectDouble();
-        });
+
+        const doubleCard = document.getElementById('mode-double');
+        if (isMobile) {
+            doubleCard.classList.add('mode-card-disabled');
+            doubleCard.querySelector('.mode-controls').innerHTML = '⚠️ Keyboard required';
+            doubleCard.addEventListener('click', () => {
+                const toast = document.createElement('div');
+                toast.className = 'mobile-toast';
+                toast.textContent = 'Double player requires keyboard';
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 2000);
+            });
+        } else {
+            doubleCard.addEventListener('click', () => {
+                if (this.onSelectDouble) this.onSelectDouble();
+            });
+        }
+
         document.getElementById('mode-back').addEventListener('click', () => {
             if (this.onBack) this.onBack();
         });
