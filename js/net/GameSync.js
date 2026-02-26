@@ -155,12 +155,30 @@ export class GameSync {
         // Power-ups
         this._syncPowerUps(game, snapshot.powerUps);
 
-        // Grid (delta)
+        // Grid (delta) — also destroy block meshes when cells change to EMPTY
         if (snapshot.grid && game.gridSystem) {
             if (snapshot.grid.full) {
-                game.gridSystem.grid = snapshot.grid.full;
+                // Full grid: destroy any block whose cell is now EMPTY
+                const g = snapshot.grid.full;
+                for (let i = game.blocks.length - 1; i >= 0; i--) {
+                    const b = game.blocks[i];
+                    if (b.alive && g[b.gridZ] && g[b.gridZ][b.gridX] === 0) {
+                        b.destroy();
+                    }
+                }
+                game.gridSystem.grid = g;
             } else if (snapshot.grid.delta) {
                 for (const c of snapshot.grid.delta) {
+                    // Cell changed to EMPTY — find and destroy the block mesh
+                    if (c.v === 0) {
+                        for (let i = game.blocks.length - 1; i >= 0; i--) {
+                            const b = game.blocks[i];
+                            if (b.alive && b.gridX === c.x && b.gridZ === c.z) {
+                                b.destroy();
+                                break;
+                            }
+                        }
+                    }
                     game.gridSystem.grid[c.z][c.x] = c.v;
                 }
             }
