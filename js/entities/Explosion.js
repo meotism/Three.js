@@ -1,5 +1,14 @@
 import { CELL } from '../map/MapData.js';
 
+// Shared geometry — created once, reused by all explosions
+let _sharedGeo = null;
+function getSharedGeo() {
+    if (!_sharedGeo) {
+        _sharedGeo = new THREE.BoxGeometry(0.7, 0.35, 0.7);
+    }
+    return _sharedGeo;
+}
+
 export class Explosion {
     constructor(gridX, gridZ, range, gridSystem) {
         this.cells = [];
@@ -49,7 +58,7 @@ export class Explosion {
     }
 
     createSegment(x, z) {
-        const geo = new THREE.BoxGeometry(0.7, 0.35, 0.7);
+        const geo = getSharedGeo(); // Shared geometry — never disposed per cell
         const mat = new THREE.MeshBasicMaterial({
             color: 0xff4500,
             transparent: true,
@@ -89,7 +98,7 @@ export class Explosion {
     dispose() {
         if (this.group.parent) this.group.parent.remove(this.group);
         for (const { mesh, mat } of this.meshes) {
-            mesh.geometry.dispose();
+            // Do NOT dispose geometry — it's shared
             mat.dispose();
         }
     }

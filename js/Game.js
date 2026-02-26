@@ -102,6 +102,10 @@ export class Game {
         this.networkInput = new NetworkInput();
         this.onlineLobbyUI = new OnlineLobbyUI(this.uiContainer);
         this._lastSentInput = null;
+
+        // HUD throttle
+        this._hudUpdateTimer = 0;
+        this._hudUpdateInterval = 0.25; // max 4 updates/sec
     }
 
     init() {
@@ -270,6 +274,8 @@ export class Game {
     // ============ ROUND SETUP ============
     startNewRound() {
         this.currentRound++;
+        // Reset grid delta tracking so client gets fresh full grid
+        if (this.gameSync) this.gameSync.resetGridDelta();
 
         // Remove player models from scene BEFORE clearScene() to prevent disposal
         for (const entry of this.players) {
@@ -464,8 +470,12 @@ export class Game {
         if (this._isMobile) this._updateMobileCamera();
         this.shakeEffect.update(delta);
 
-        // Update HUD
-        this.hud.updateStats(this.players);
+        // Update HUD (throttled)
+        this._hudUpdateTimer += delta;
+        if (this._hudUpdateTimer >= this._hudUpdateInterval) {
+            this._hudUpdateTimer = 0;
+            this.hud.updateStats(this.players);
+        }
 
         // Check round end
         this.checkRoundEnd(delta);
@@ -825,7 +835,6 @@ export class Game {
                     this.hud.show(this.currentRound, MAX_ROUNDS, this.scores, this.players);
                 }
                 this.gameSync.applyState(this, snapshot);
-                if (this.hud.element) this.hud.updateStats(this.players);
             }
         };
 
@@ -901,6 +910,18 @@ export class Game {
     _updateClientVisuals(delta) {
         // Client-only: run animations without game logic
 
+        // Smooth player position interpolation (framerate-independent exponential lerp)
+        const t = 1 - Math.exp(-12 * delta);
+        for (const entry of this.players) {
+            const p = entry.player;
+            if (p._netTargetX !== undefined && p.alive) {
+                p.model.position.x += (p._netTargetX - p.model.position.x) * t;
+                p.model.position.y += (p._netTargetY - p.model.position.y) * t;
+                p.model.position.z += (p._netTargetZ - p.model.position.z) * t;
+                p.model.rotation.y = p._netTargetRY;
+            }
+        }
+
         // Death animations
         for (const entry of this.players) {
             const p = entry.player;
@@ -918,11 +939,25 @@ export class Game {
             bomb.update(delta);
         }
 
-        // Explosion animations
-        for (let i = this.explosions.length - 1; i >= 0; i--) {
-            if (this.explosions[i].update(delta)) {
-                this.explosions[i].dispose();
-                this.explosions.splice(i, 1);
+        // Explosion animations — visual interpolation only
+        // Host controls lifecycle via _syncExplosions; client NEVER disposes here
+        for (const exp of this.explosions) {
+            if (exp.timer > 0) {
+                exp.timer -= delta;
+                if (exp.timer < 0) exp.timer = 0;
+                const progress = 1 - (exp.timer / 0.5);
+                for (const { mesh, mat } of exp.meshes) {
+                    if (progress < 0.3) {
+                        mat.color.setHex(0xff4500);
+                        const s = 0.7 + progress * 1.0;
+                        mesh.scale.set(s, 1 + progress * 2, s);
+                    } else if (progress < 0.6) {
+                        mat.color.setHex(0xffaa00);
+                    } else {
+                        mat.color.setHex(0xffdd44);
+                    }
+                    mat.opacity = Math.max(0, 1 - progress * 1.2);
+                }
             }
         }
 
@@ -942,8 +977,12 @@ export class Game {
         if (this._isMobile) this._updateMobileCamera();
         this.shakeEffect.update(delta);
 
-        // HUD
-        this.hud.updateStats(this.players);
+        // HUD (throttled — stats only change on powerup pickup)
+        this._hudUpdateTimer += delta;
+        if (this._hudUpdateTimer >= this._hudUpdateInterval) {
+            this._hudUpdateTimer = 0;
+            this.hud.updateStats(this.players);
+        }
     }
 
     _cleanupOnline() {

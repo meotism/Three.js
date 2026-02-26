@@ -2,11 +2,31 @@ import { Bomb } from '../entities/Bomb.js';
 import { Explosion } from '../entities/Explosion.js';
 import { PowerUp, POWERUP_TYPES } from '../entities/PowerUp.js';
 
+// Shared explosion geometry — created once, reused by all client-side explosions
+let _sharedExplosionGeo = null;
+function getSharedExplosionGeo() {
+    if (!_sharedExplosionGeo) {
+        _sharedExplosionGeo = new THREE.BoxGeometry(0.7, 0.35, 0.7);
+    }
+    return _sharedExplosionGeo;
+}
+
 export class GameSync {
     constructor() {
         this._sendTimer = 0;
         this._sendInterval = 1 / 15; // 15 Hz
         this._lastStateTimestamp = 0;
+
+        // Grid delta tracking
+        this._prevGrid = null;
+
+        // Reusable containers (avoid GC pressure from Set/Map recreation)
+        this._tempSet = new Set();
+        this._tempMap = new Map();
+
+        // Effect throttling for chain explosions
+        this._lastExplosionEffectTime = 0;
+        this._explosionEffectCooldown = 0.15; // 150ms min between effects
     }
 
     // Called by host every frame. Throttles broadcast to 15Hz.
@@ -71,9 +91,44 @@ export class GameSync {
                 type: pu.type.id,
             })),
 
-            // Send grid so client can reconstruct walkability
-            grid: game.gridSystem ? game.gridSystem.grid.map(row => [...row]) : null,
+            // Grid delta sync — only send changes
+            grid: this._serializeGridDelta(game.gridSystem),
         };
+    }
+
+    _serializeGridDelta(gridSystem) {
+        if (!gridSystem) return null;
+        const grid = gridSystem.grid;
+
+        // First sync or round reset: send full grid
+        if (!this._prevGrid || this._prevGrid.length !== grid.length) {
+            this._prevGrid = grid.map(row => [...row]);
+            return { full: grid.map(row => [...row]) };
+        }
+
+        // Subsequent: only send changed cells
+        const changes = [];
+        for (let z = 0; z < grid.length; z++) {
+            for (let x = 0; x < grid[z].length; x++) {
+                if (grid[z][x] !== this._prevGrid[z][x]) {
+                    changes.push({ x, z, v: grid[z][x] });
+                    this._prevGrid[z][x] = grid[z][x];
+                }
+            }
+        }
+
+        // Too many changes → send full (e.g., round reset)
+        if (changes.length > 20) {
+            this._prevGrid = grid.map(row => [...row]);
+            return { full: grid.map(row => [...row]) };
+        }
+
+        return changes.length > 0 ? { delta: changes } : null;
+    }
+
+    // Reset grid tracking (call on new round)
+    resetGridDelta() {
+        this._prevGrid = null;
     }
 
     // -------- Deserialization (client applies host state) --------
@@ -88,21 +143,27 @@ export class GameSync {
         game.currentRound = snapshot.round;
         game.countdownTimer = snapshot.countdownTimer;
 
-        // Players
+        // Players — store targets for smooth interpolation
         this._syncPlayers(game, snapshot.players);
 
         // Bombs
         this._syncBombs(game, snapshot.bombs);
 
-        // Explosions
+        // Explosions — host-authoritative lifecycle
         this._syncExplosions(game, snapshot.explosions);
 
         // Power-ups
         this._syncPowerUps(game, snapshot.powerUps);
 
-        // Grid
+        // Grid (delta)
         if (snapshot.grid && game.gridSystem) {
-            game.gridSystem.grid = snapshot.grid.map(row => [...row]);
+            if (snapshot.grid.full) {
+                game.gridSystem.grid = snapshot.grid.full;
+            } else if (snapshot.grid.delta) {
+                for (const c of snapshot.grid.delta) {
+                    game.gridSystem.grid[c.z][c.x] = c.v;
+                }
+            }
         }
     }
 
@@ -122,12 +183,11 @@ export class GameSync {
             p.activeBombs = pd.activeBombs;
             p.speed = pd.speed;
 
-            // Smooth interpolation toward authoritative position
-            const lerp = 0.3;
-            p.model.position.x += (pd.px - p.model.position.x) * lerp;
-            p.model.position.y += (pd.py - p.model.position.y) * lerp;
-            p.model.position.z += (pd.pz - p.model.position.z) * lerp;
-            p.model.rotation.y = pd.ry;
+            // Store target positions for smooth interpolation in _updateClientVisuals
+            p._netTargetX = pd.px;
+            p._netTargetY = pd.py;
+            p._netTargetZ = pd.pz;
+            p._netTargetRY = pd.ry;
 
             // Death transition
             if (!pd.alive && p.alive) {
@@ -145,7 +205,10 @@ export class GameSync {
     }
 
     _syncBombs(game, bombsData) {
-        const expected = new Set(bombsData.map(b => `${b.gx},${b.gz}`));
+        // Reuse containers to avoid GC pressure
+        const expected = this._tempSet;
+        expected.clear();
+        for (const b of bombsData) expected.add(`${b.gx},${b.gz}`);
 
         // Remove bombs that no longer exist on host
         for (let i = game.bombs.length - 1; i >= 0; i--) {
@@ -157,7 +220,10 @@ export class GameSync {
         }
 
         // Add missing bombs, update existing
-        const existing = new Map(game.bombs.map(b => [`${b.gridX},${b.gridZ}`, b]));
+        const existing = this._tempMap;
+        existing.clear();
+        for (const b of game.bombs) existing.set(`${b.gridX},${b.gridZ}`, b);
+
         for (const bd of bombsData) {
             const key = `${bd.gx},${bd.gz}`;
             const bomb = existing.get(key);
@@ -173,55 +239,68 @@ export class GameSync {
     }
 
     _syncExplosions(game, explosionsData) {
-        // Build set of active explosion centers from host
-        const hostCenters = new Set();
+        // Build Map of host explosions keyed by center cell
+        const hostMap = this._tempMap;
+        hostMap.clear();
         for (const ed of explosionsData) {
-            if (ed.cells.length > 0) hostCenters.add(`${ed.cells[0].x},${ed.cells[0].z}`);
+            if (ed.cells.length > 0) {
+                hostMap.set(`${ed.cells[0].x},${ed.cells[0].z}`, ed);
+            }
         }
 
-        // Remove client explosions that host no longer has
+        // Build Map of existing client explosions
+        const clientMap = new Map();
+        for (let i = 0; i < game.explosions.length; i++) {
+            const e = game.explosions[i];
+            if (e.cells && e.cells[0]) {
+                clientMap.set(`${e.cells[0].x},${e.cells[0].z}`, e);
+            }
+        }
+
+        // Remove client explosions no longer on host
         for (let i = game.explosions.length - 1; i >= 0; i--) {
             const e = game.explosions[i];
-            const center = e.cells[0];
-            if (!center || !hostCenters.has(`${center.x},${center.z}`)) {
+            const center = e.cells && e.cells[0];
+            if (!center || !hostMap.has(`${center.x},${center.z}`)) {
                 e.dispose();
                 game.explosions.splice(i, 1);
             }
         }
 
-        // Add new explosions from host
-        const clientCenters = new Set();
-        for (const e of game.explosions) {
-            if (e.cells[0]) clientCenters.add(`${e.cells[0].x},${e.cells[0].z}`);
-        }
-
-        for (const ed of explosionsData) {
-            if (ed.cells.length === 0 || ed.timer <= 0) continue;
-            const center = ed.cells[0];
-            if (clientCenters.has(`${center.x},${center.z}`)) {
-                // Update timer on existing
-                const existing = game.explosions.find(e =>
-                    e.cells[0] && e.cells[0].x === center.x && e.cells[0].z === center.z
-                );
-                if (existing) existing.timer = ed.timer;
+        // Add new or update existing explosions
+        for (const [key, ed] of hostMap) {
+            if (ed.timer <= 0) continue;
+            const existing = clientMap.get(key);
+            if (existing && game.explosions.includes(existing)) {
+                // Update timer from host (authoritative)
+                existing.timer = ed.timer;
             } else {
-                // Create visual-only explosion on client
+                // New explosion — create visual
                 const exp = this._createExplosionFromCells(ed.cells, ed.timer);
                 game.explosions.push(exp);
                 game.sceneManager.scene.add(exp.group);
-                game.audio.play('explosion');
-                game.shakeEffect.shake(0.12);
-                game.particles.emit(center.x, 0.3, center.z, 25, 0xff4500);
+                this._emitExplosionEffects(game, ed.cells[0]);
             }
         }
+    }
+
+    _emitExplosionEffects(game, center) {
+        const now = performance.now() / 1000;
+        if (now - this._lastExplosionEffectTime < this._explosionEffectCooldown) {
+            return; // Throttle chain explosion effects
+        }
+        this._lastExplosionEffectTime = now;
+        game.audio.play('explosion');
+        game.shakeEffect.shake(0.12);
+        game.particles.emit(center.x, 0.3, center.z, 15, 0xff4500);
     }
 
     _createExplosionFromCells(cells, timer) {
         const group = new THREE.Group();
         const meshes = [];
+        const geo = getSharedExplosionGeo(); // Shared — never disposed per cell
 
         for (const cell of cells) {
-            const geo = new THREE.BoxGeometry(0.7, 0.35, 0.7);
             const mat = new THREE.MeshBasicMaterial({
                 color: 0xff4500,
                 transparent: true,
@@ -261,7 +340,7 @@ export class GameSync {
             dispose() {
                 if (this.group.parent) this.group.parent.remove(this.group);
                 for (const { mesh, mat } of this.meshes) {
-                    mesh.geometry.dispose();
+                    // Do NOT dispose geometry — it's shared
                     mat.dispose();
                 }
             },
@@ -269,7 +348,10 @@ export class GameSync {
     }
 
     _syncPowerUps(game, powerUpsData) {
-        const expected = new Set(powerUpsData.map(p => `${p.gx},${p.gz}`));
+        // Reuse Set to avoid GC pressure
+        const expected = this._tempSet;
+        expected.clear();
+        for (const p of powerUpsData) expected.add(`${p.gx},${p.gz}`);
 
         // Remove collected / missing
         for (let i = game.powerUps.length - 1; i >= 0; i--) {
@@ -280,10 +362,13 @@ export class GameSync {
             }
         }
 
+        // Build existing set from current client powerups
+        expected.clear();
+        for (const p of game.powerUps) expected.add(`${p.gridX},${p.gridZ}`);
+
         // Add new
-        const existing = new Set(game.powerUps.map(p => `${p.gridX},${p.gridZ}`));
         for (const pd of powerUpsData) {
-            if (!existing.has(`${pd.gx},${pd.gz}`)) {
+            if (!expected.has(`${pd.gx},${pd.gz}`)) {
                 const type = POWERUP_TYPES.find(t => t.id === pd.type);
                 if (!type) continue;
                 const pu = new PowerUp(pd.gx, pd.gz, type);
