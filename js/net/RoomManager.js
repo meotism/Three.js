@@ -1,4 +1,5 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './SupabaseConfig.js';
+import { PeerManager } from './PeerManager.js';
 
 export class RoomManager {
     constructor() {
@@ -8,6 +9,9 @@ export class RoomManager {
         this.isHost = false;
         this.playerId = null; // 1 = host, 2-4 = joiners
         this.playerCount = 0;
+
+        // WebRTC peer manager
+        this.peerManager = null;
 
         // Track assigned player IDs (host only)
         this._nextPlayerId = 2;
@@ -69,6 +73,34 @@ export class RoomManager {
             config: { presence: { key: presenceKey } },
         });
 
+        // --- Create PeerManager ---
+        this.peerManager = new PeerManager();
+        this.peerManager.isHost = this.isHost;
+        this.peerManager.localPlayerId = this.isHost ? 1 : null;
+        this.peerManager.setSignalingChannel(this.channel);
+
+        // Route DataChannel messages to callbacks
+        this.peerManager.onDataChannelMessage = (fromPlayerId, msg) => {
+            switch (msg.event) {
+                case 'game_state':
+                    if (!this.isHost && this.onGameState) this.onGameState(msg.payload);
+                    break;
+                case 'player_input':
+                    if (this.isHost && this.onRemoteInput) this.onRemoteInput(msg.payload);
+                    break;
+                case 'map_selected':
+                    if (!this.isHost && this.onMapSelected) this.onMapSelected(msg.payload.mapIndex, msg.payload.humanCount);
+                    break;
+                case 'game_event':
+                    if (!this.isHost && this.onGameEvent) this.onGameEvent(msg.payload);
+                    break;
+            }
+        };
+
+        this.peerManager.onPeerDisconnected = (playerId) => {
+            if (this.onPeerLeave) this.onPeerLeave();
+        };
+
         // --- Presence ---
         this.channel.on('presence', { event: 'sync' }, () => {
             const state = this.channel.presenceState();
@@ -98,7 +130,10 @@ export class RoomManager {
 
             // Remove the assigned player ID for the leaver
             if (this.isHost && key && this._assignedPlayers.has(key)) {
+                const leavingPlayerId = this._assignedPlayers.get(key);
                 this._assignedPlayers.delete(key);
+                // Close WebRTC connection for the leaver
+                if (this.peerManager) this.peerManager.closePeer(leavingPlayerId);
             }
 
             if (count < 2) {
@@ -106,27 +141,12 @@ export class RoomManager {
             }
         });
 
-        // --- Broadcast listeners ---
-        this.channel.on('broadcast', { event: 'game_state' }, ({ payload }) => {
-            if (!this.isHost && this.onGameState) this.onGameState(payload);
-        });
-
-        this.channel.on('broadcast', { event: 'player_input' }, ({ payload }) => {
-            if (this.isHost && this.onRemoteInput) this.onRemoteInput(payload);
-        });
-
-        this.channel.on('broadcast', { event: 'map_selected' }, ({ payload }) => {
-            if (!this.isHost && this.onMapSelected) this.onMapSelected(payload.mapIndex, payload.humanCount);
-        });
-
-        this.channel.on('broadcast', { event: 'game_event' }, ({ payload }) => {
-            if (!this.isHost && this.onGameEvent) this.onGameEvent(payload);
-        });
-
-        // Client listens for player ID assignment
+        // Client listens for player ID assignment (signaling, stays on Supabase)
         this.channel.on('broadcast', { event: 'player_id_assigned' }, ({ payload }) => {
             if (!this.isHost && payload.presenceKey === presenceKey) {
                 this.playerId = payload.playerId;
+                // Tell PeerManager its local ID so it can process buffered signals
+                if (this.peerManager) this.peerManager.setLocalPlayerId(payload.playerId);
                 if (this.onPlayerAssigned) this.onPlayerAssigned(payload.playerId);
             }
         });
@@ -154,40 +174,49 @@ export class RoomManager {
             const assignedId = this._nextPlayerId++;
             this._assignedPlayers.set(key, assignedId);
 
-            // Tell the joiner their player ID
+            // Tell the joiner their player ID (via Supabase — signaling)
             this.channel.send({
                 type: 'broadcast',
                 event: 'player_id_assigned',
                 payload: { presenceKey: key, playerId: assignedId },
             });
+
+            // Initiate WebRTC connection to the new joiner
+            if (this.peerManager) {
+                this.peerManager.initiateConnection(assignedId);
+            }
         }
     }
 
-    // ---- Broadcast helpers ----
+    // ---- Broadcast helpers (now via WebRTC DataChannel) ----
 
     broadcastGameState(state) {
-        if (!this.channel || !this.isHost) return;
-        this.channel.send({ type: 'broadcast', event: 'game_state', payload: state });
+        if (!this.isHost) return;
+        if (this.peerManager && this.peerManager.readyPeers.size > 0) {
+            this.peerManager.broadcast({ event: 'game_state', payload: state });
+        }
     }
 
     broadcastInput(inputState) {
-        if (!this.channel || this.isHost) return;
-        // Include playerId so host knows which player this input is for
-        this.channel.send({
-            type: 'broadcast',
-            event: 'player_input',
-            payload: { ...inputState, playerId: this.playerId },
-        });
+        if (this.isHost) return;
+        const msg = { event: 'player_input', payload: { ...inputState, playerId: this.playerId } };
+        if (this.peerManager && this.peerManager.readyPeers.has(1)) {
+            this.peerManager.send(1, msg);
+        }
     }
 
     broadcastMapSelected(mapIndex, humanCount) {
-        if (!this.channel || !this.isHost) return;
-        this.channel.send({ type: 'broadcast', event: 'map_selected', payload: { mapIndex, humanCount } });
+        if (!this.isHost) return;
+        if (this.peerManager && this.peerManager.readyPeers.size > 0) {
+            this.peerManager.broadcast({ event: 'map_selected', payload: { mapIndex, humanCount } });
+        }
     }
 
     broadcastGameEvent(event) {
-        if (!this.channel || !this.isHost) return;
-        this.channel.send({ type: 'broadcast', event: 'game_event', payload: event });
+        if (!this.isHost) return;
+        if (this.peerManager && this.peerManager.readyPeers.size > 0) {
+            this.peerManager.broadcast({ event: 'game_event', payload: event });
+        }
     }
 
     // Get current number of online human players (including host)
@@ -196,6 +225,10 @@ export class RoomManager {
     }
 
     destroy() {
+        if (this.peerManager) {
+            this.peerManager.destroy();
+            this.peerManager = null;
+        }
         if (this.channel) {
             this.channel.unsubscribe();
             this.channel = null;
