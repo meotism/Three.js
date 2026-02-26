@@ -91,9 +91,16 @@ canvas { display: block; }
     color: #fff;
 }
 
-.menu-btn.primary:hover {
+.menu-btn.primary:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 8px 30px rgba(255,69,0,0.5);
+}
+
+.menu-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
 }
 
 /* Buy Me Coffee Button */
@@ -885,6 +892,13 @@ canvas { display: block; }
     color: #ef5350;
     min-height: 20px;
     margin-bottom: 10px;
+}
+
+.player-count {
+    font-size: 18px;
+    font-weight: 700;
+    color: #42a5f5;
+    letter-spacing: 2px;
 }
 
 .online-spinner {

@@ -8,6 +8,7 @@ export class OnlineLobbyUI {
         this.onJoinRoom = null;
         this.onBack = null;
         this.onCancel = null;
+        this.onStart = null; // host clicks START
     }
 
     showLobbyChoice() {
@@ -96,26 +97,61 @@ export class OnlineLobbyUI {
         this.element = document.createElement('div');
         this.element.className = 'mode-select-screen';
 
-        const message = isHost
-            ? 'Share this code with your friend:'
-            : 'Connecting to room...';
-
-        this.element.innerHTML = `
-            <div class="mode-select-title">Waiting for Player</div>
-            <div class="online-waiting">
-                <div class="online-status">${message}</div>
-                ${isHost ? `<div class="room-code-display">${roomCode}</div>` : ''}
-                <div class="online-spinner"></div>
-            </div>
-            <div class="mode-select-actions">
-                <button class="menu-btn" id="waiting-cancel">CANCEL</button>
-            </div>
-        `;
+        if (isHost) {
+            // Host: show room code, player count, and START button
+            this.element.innerHTML = `
+                <div class="mode-select-title">Room Created</div>
+                <div class="online-waiting">
+                    <div class="online-status">Share this code with friends:</div>
+                    <div class="room-code-display">${roomCode}</div>
+                    <div class="player-count" id="player-count">Players: 1 / 4</div>
+                    <div class="online-spinner"></div>
+                </div>
+                <div class="mode-select-actions">
+                    <button class="menu-btn primary" id="host-start" disabled>START</button>
+                    <button class="menu-btn" id="waiting-cancel">CANCEL</button>
+                </div>
+            `;
+        } else {
+            // Client: show connecting
+            this.element.innerHTML = `
+                <div class="mode-select-title">Joining Room</div>
+                <div class="online-waiting">
+                    <div class="online-status">Connecting to room...</div>
+                    <div class="player-count" id="player-count"></div>
+                    <div class="online-spinner"></div>
+                </div>
+                <div class="mode-select-actions">
+                    <button class="menu-btn" id="waiting-cancel">CANCEL</button>
+                </div>
+            `;
+        }
         this.container.appendChild(this.element);
+
+        const startBtn = document.getElementById('host-start');
+        if (startBtn) {
+            startBtn.addEventListener('click', () => {
+                if (this.onStart) this.onStart();
+            });
+        }
 
         document.getElementById('waiting-cancel').addEventListener('click', () => {
             if (this.onCancel) this.onCancel();
         });
+    }
+
+    // Update the player count display (called when players join/leave)
+    updatePlayerCount(count) {
+        const el = this.element?.querySelector('#player-count');
+        if (el) {
+            el.textContent = `Players: ${count} / 4`;
+        }
+
+        // Enable START button when 2+ players
+        const startBtn = this.element?.querySelector('#host-start');
+        if (startBtn) {
+            startBtn.disabled = count < 2;
+        }
     }
 
     showConnected(roomCode) {
@@ -137,6 +173,7 @@ export class OnlineLobbyUI {
             <div class="mode-select-title">Waiting for Host</div>
             <div class="online-waiting">
                 <div class="online-status">${message || 'Host is selecting a map...'}</div>
+                <div class="player-count" id="player-count"></div>
                 <div class="online-spinner"></div>
             </div>
         `;

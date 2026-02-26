@@ -99,9 +99,10 @@ export class Game {
         this.isClient = false;
         this.roomManager = null;
         this.gameSync = new GameSync();
-        this.networkInput = new NetworkInput();
+        this.networkInputs = new Map(); // playerId → NetworkInput
         this.onlineLobbyUI = new OnlineLobbyUI(this.uiContainer);
         this._lastSentInput = null;
+        this.onlineHumanCount = 2; // how many online human players (set at game start)
 
         // HUD throttle
         this._hudUpdateTimer = 0;
@@ -256,9 +257,9 @@ export class Game {
             this.selectedMapIndex = index;
             this.currentRound = 0;
             this.scores = [0, 0, 0, 0];
-            // Notify client of map selection
+            // Notify clients of map selection + human count
             if (this.isOnline && this.isHost && this.roomManager) {
-                this.roomManager.broadcastMapSelected(index);
+                this.roomManager.broadcastMapSelected(index, this.onlineHumanCount);
             }
             this.startNewRound();
         };
@@ -306,21 +307,30 @@ export class Game {
 
         // Spawn positions
         const spawns = GridSystem.getSpawnPositions(mapDef);
-        const humanCount = this.isOnline ? 2 : (this.gameMode === 'single' ? 1 : 2);
+        const humanCount = this.isOnline ? this.onlineHumanCount : (this.gameMode === 'single' ? 1 : 2);
         const KEY_SETS = [P1_KEYS, P2_KEYS];
+
+        // Setup NetworkInputs for remote players (host only)
+        if (this.isOnline && this.isHost) {
+            this.networkInputs.clear();
+            for (let id = 2; id <= humanCount; id++) {
+                this.networkInputs.set(id, new NetworkInput());
+            }
+        }
 
         // Create players on first round, reuse on subsequent
         if (this.players.length === 0) {
             for (let i = 0; i < 4; i++) {
                 let isNPC, keys;
+                const playerId = i + 1;
 
                 if (this.isOnline) {
-                    // Online: P1 + P2 are human, P3 + P4 are AI
-                    isNPC = i >= 2;
-                    // P2 on host uses NetworkInput (generic keys), P2 on client is remote-controlled
+                    // Online: players up to humanCount are human, rest are AI
+                    isNPC = playerId > humanCount;
+                    // Remote human players use generic keys (fed by NetworkInput on host)
                     keys = isNPC ? AI_KEYS
-                        : (i === 1) ? AI_KEYS  // P2 uses generic keys (fed by NetworkInput on host)
-                        : (this._isMobile && i === 0) ? AI_KEYS
+                        : (playerId >= 2) ? AI_KEYS  // remote humans use generic keys
+                        : (this._isMobile && playerId === 1) ? AI_KEYS
                         : P1_KEYS;
                 } else {
                     isNPC = i >= humanCount;
@@ -329,8 +339,8 @@ export class Game {
                         : KEY_SETS[i];
                 }
 
-                const player = new Player(i + 1, PLAYER_COLORS[i], keys);
-                const brain = isNPC ? new AIBrain(i + 1) : null;
+                const player = new Player(playerId, PLAYER_COLORS[i], keys);
+                const brain = isNPC ? new AIBrain(playerId) : null;
                 const aiInput = brain ? brain.aiInput : null;
                 this.players.push({ player, isNPC, brain, aiInput });
             }
@@ -408,9 +418,9 @@ export class Game {
         // Update all players
         for (const entry of this.players) {
             let inputSource;
-            if (this.isOnline && this.isHost && entry.player.id === 2) {
-                // Remote player on host — use NetworkInput
-                inputSource = this.networkInput;
+            if (this.isOnline && this.isHost && this.networkInputs.has(entry.player.id)) {
+                // Remote player on host — use their NetworkInput
+                inputSource = this.networkInputs.get(entry.player.id);
             } else if (entry.isNPC) {
                 inputSource = entry.aiInput;
             } else if (this._isMobile && entry.player.id === 1) {
@@ -588,9 +598,9 @@ export class Game {
 
     checkRoundEnd(delta) {
         const alivePlayers = this.players.filter(e => e.player.alive);
-        // In online mode, "humans" = P1 + P2 (ids 1-2) regardless of isNPC flag
+        // In online mode, "humans" = all online players (ids 1 to humanCount)
         const aliveHumans = this.isOnline
-            ? this.players.filter(e => e.player.id <= 2 && e.player.alive)
+            ? this.players.filter(e => e.player.id <= this.onlineHumanCount && e.player.alive)
             : this.players.filter(e => !e.isNPC && e.player.alive);
 
         // Round ends when: <=1 player alive OR all human players are dead
@@ -729,7 +739,9 @@ export class Game {
     update(delta) {
         this.input.update();
         if (this.touchControls) this.touchControls.update();
-        if (this.isOnline && this.isHost) this.networkInput.update();
+        if (this.isOnline && this.isHost) {
+            for (const ni of this.networkInputs.values()) ni.update();
+        }
 
         // Update AI inputs
         for (const entry of this.players) {
@@ -786,6 +798,14 @@ export class Game {
 
             this.onlineLobbyUI.showWaiting(code, true);
             this._setupRoomCallbacks();
+
+            // Host: START button triggers map select
+            this.onlineLobbyUI.onStart = () => {
+                this.audio.play('menu_select');
+                this.onlineHumanCount = this.roomManager.getHumanCount();
+                this.onlineLobbyUI.hide();
+                this.setState(STATES.MAP_SELECT);
+            };
         };
 
         this.onlineLobbyUI.onJoinRoom = async (code) => {
@@ -812,19 +832,24 @@ export class Game {
 
     _setupRoomCallbacks() {
         this.roomManager.onPeerJoin = () => {
-            this.onlineLobbyUI.showConnected(this.roomManager.roomCode);
             this.audio.play('menu_select');
+            if (this.isHost) {
+                // Host: update lobby with player count, stay in lobby
+                this.onlineLobbyUI.updatePlayerCount(this.roomManager.playerCount);
+            } else {
+                // Client: show connected briefly, then wait for host
+                this.onlineLobbyUI.showConnected(this.roomManager.roomCode);
+                setTimeout(() => {
+                    this.onlineLobbyUI.showWaitingForHost('Waiting for host to start...');
+                    if (this.roomManager) {
+                        this.onlineLobbyUI.updatePlayerCount(this.roomManager.playerCount);
+                    }
+                }, 1000);
+            }
+        };
 
-            setTimeout(() => {
-                if (this.isHost) {
-                    // Host goes to map select
-                    this.onlineLobbyUI.hide();
-                    this.setState(STATES.MAP_SELECT);
-                } else {
-                    // Client waits for host's map selection
-                    this.onlineLobbyUI.showWaitingForHost('Host is selecting a map...');
-                }
-            }, 1000);
+        this.roomManager.onPlayerCountChange = (count) => {
+            this.onlineLobbyUI.updatePlayerCount(count);
         };
 
         this.roomManager.onPeerLeave = () => {
@@ -832,11 +857,14 @@ export class Game {
                 this.state === STATES.ROUND_OVER || this.state === STATES.GAME_OVER) {
                 // Show disconnect during active game
                 this.cleanupState();
-                this.onlineLobbyUI.showDisconnected('The other player left the game.');
+                this.onlineLobbyUI.showDisconnected('A player left the game.');
                 this.onlineLobbyUI.onBack = () => {
                     this._cleanupOnline();
                     this.setState(STATES.MENU);
                 };
+            } else if (this.isHost) {
+                // Host in lobby: just update count
+                this.onlineLobbyUI.updatePlayerCount(this.roomManager.playerCount);
             } else {
                 this._cleanupOnline();
                 this.setState(STATES.MENU);
@@ -855,17 +883,20 @@ export class Game {
             }
         };
 
-        // Host receives remote player input
+        // Host receives remote player input (routed by playerId)
         this.roomManager.onRemoteInput = (inputState) => {
             if (this.isHost) {
-                this.networkInput.applyRemoteInput(inputState);
+                const id = inputState.playerId;
+                const ni = this.networkInputs.get(id);
+                if (ni) ni.applyRemoteInput(inputState);
             }
         };
 
-        // Client receives map selection from host
-        this.roomManager.onMapSelected = (mapIndex) => {
+        // Client receives map selection + humanCount from host
+        this.roomManager.onMapSelected = (mapIndex, humanCount) => {
             if (this.isClient) {
                 this.selectedMapIndex = mapIndex;
+                this.onlineHumanCount = humanCount || 2;
                 this.currentRound = 0;
                 this.scores = [0, 0, 0, 0];
                 this.onlineLobbyUI.hide();
@@ -1019,7 +1050,9 @@ export class Game {
         this.isOnline = false;
         this.isHost = false;
         this.isClient = false;
-        this.networkInput.reset();
+        for (const ni of this.networkInputs.values()) ni.reset();
+        this.networkInputs.clear();
+        this.onlineHumanCount = 2;
         this._lastSentInput = null;
         this.onlineLobbyUI.hide();
     }
