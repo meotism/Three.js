@@ -28,9 +28,20 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Inject Supabase config
+        env:
+          SUPA_URL: ${{ secrets.SUPABASE_URL }}
+          SUPA_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          sed -i "s|__SUPABASE_URL__|${{ secrets.SUPABASE_URL }}|g" js/net/SupabaseConfig.js
-          sed -i "s|__SUPABASE_ANON_KEY__|${{ secrets.SUPABASE_ANON_KEY }}|g" js/net/SupabaseConfig.js
+          echo "SUPABASE_URL length: ${#SUPA_URL}"
+          echo "SUPABASE_ANON_KEY length: ${#SUPA_KEY}"
+          sed -i "s|__SUPABASE_URL__|${SUPA_URL}|g" js/net/SupabaseConfig.js
+          sed -i "s|__SUPABASE_ANON_KEY__|${SUPA_KEY}|g" js/net/SupabaseConfig.js
+          if grep -q "__SUPABASE" js/net/SupabaseConfig.js; then
+            echo "::warning::Placeholders still present after injection!"
+            grep "__SUPABASE" js/net/SupabaseConfig.js
+          else
+            echo "Supabase config injected successfully"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
