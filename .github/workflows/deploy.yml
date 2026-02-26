@@ -28,21 +28,23 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Inject Supabase config
-        env:
-          SUPA_URL: ${{ secrets.SUPABASE_URL }}
-          SUPA_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          echo "SUPABASE_URL length: ${#SUPA_URL}"
-          echo "SUPABASE_ANON_KEY length: ${#SUPA_KEY}"
-          sed -i "s|__SUPABASE_URL__|${SUPA_URL}|g" js/net/SupabaseConfig.js
-          sed -i "s|__SUPABASE_ANON_KEY__|${SUPA_KEY}|g" js/net/SupabaseConfig.js
-          if grep -q "__SUPABASE" js/net/SupabaseConfig.js; then
-            echo "::warning::Placeholders still present after injection!"
-            echo "url_injected=false" > deploy-status.txt
-          else
-            echo "Supabase config injected successfully"
-            echo "url_injected=true" > deploy-status.txt
-          fi
+          URL_VAL="${{ secrets.SUPABASE_URL }}"
+          KEY_VAL="${{ secrets.SUPABASE_ANON_KEY }}"
+          echo "URL length: ${#URL_VAL}, KEY length: ${#KEY_VAL}"
+          cat > js/net/SupabaseConfig.js << ENDOFFILE
+          // Supabase credentials — injected by GitHub Actions during deployment.
+          export const SUPABASE_URL = '${URL_VAL}';
+          export const SUPABASE_ANON_KEY = '${KEY_VAL}';
+          export function isOnlineAvailable() {
+              return SUPABASE_URL.startsWith('https://') && SUPABASE_ANON_KEY.length > 10;
+          }
+          ENDOFFILE
+          echo "Generated config:"
+          cat js/net/SupabaseConfig.js
+          echo "---"
+          echo "url_length=${#URL_VAL}" > deploy-status.txt
+          echo "key_length=${#KEY_VAL}" >> deploy-status.txt
           echo "deploy_time=$(date -u +%Y%m%d%H%M%S)" >> deploy-status.txt
 
       - name: Upload artifact
