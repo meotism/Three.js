@@ -18,6 +18,10 @@ import { RoundOverUI } from './ui/RoundOverUI.js';
 import { AIInput } from './ai/AIInput.js';
 import { AIBrain } from './ai/AIBrain.js';
 import { TouchControls, isMobileDevice } from './ui/TouchControls.js';
+import { RoomManager } from './net/RoomManager.js';
+import { GameSync } from './net/GameSync.js';
+import { NetworkInput } from './net/NetworkInput.js';
+import { OnlineLobbyUI } from './ui/OnlineLobbyUI.js';
 
 const STATES = {
     MENU: 'MENU',
@@ -27,6 +31,7 @@ const STATES = {
     PLAYING: 'PLAYING',
     ROUND_OVER: 'ROUND_OVER',
     GAME_OVER: 'GAME_OVER',
+    ONLINE_LOBBY: 'ONLINE_LOBBY',
 };
 
 const MAX_ROUNDS = 5;
@@ -87,6 +92,16 @@ export class Game {
 
         // Round end delay
         this.roundEndDelay = 0;
+
+        // Online multiplayer
+        this.isOnline = false;
+        this.isHost = false;
+        this.isClient = false;
+        this.roomManager = null;
+        this.gameSync = new GameSync();
+        this.networkInput = new NetworkInput();
+        this.onlineLobbyUI = new OnlineLobbyUI(this.uiContainer);
+        this._lastSentInput = null;
     }
 
     init() {
@@ -130,6 +145,9 @@ export class Game {
             case STATES.GAME_OVER:
                 this.setupGameOver();
                 break;
+            case STATES.ONLINE_LOBBY:
+                this.setupOnlineLobby();
+                break;
         }
     }
 
@@ -139,6 +157,7 @@ export class Game {
         this.mapSelectUI.hide();
         this.hud.hide();
         this.roundOverUI.hide();
+        this.onlineLobbyUI.hide();
         if (this.countdownElement) {
             this.countdownElement.remove();
             this.countdownElement = null;
@@ -148,6 +167,7 @@ export class Game {
 
     // ============ MENU ============
     setupMenu() {
+        this._cleanupOnline();
         this.scores = [0, 0, 0, 0];
         this.currentRound = 0;
         this.players = [];
@@ -213,6 +233,11 @@ export class Game {
             this.gameMode = 'double';
             this.setState(STATES.MAP_SELECT);
         };
+        this.modeSelectUI.onSelectOnline = () => {
+            this.audio.play('menu_select');
+            this.gameMode = 'online';
+            this.setState(STATES.ONLINE_LOBBY);
+        };
         this.modeSelectUI.onBack = () => {
             this.audio.play('menu_select');
             this.setState(STATES.MENU);
@@ -227,10 +252,17 @@ export class Game {
             this.selectedMapIndex = index;
             this.currentRound = 0;
             this.scores = [0, 0, 0, 0];
+            // Notify client of map selection
+            if (this.isOnline && this.isHost && this.roomManager) {
+                this.roomManager.broadcastMapSelected(index);
+            }
             this.startNewRound();
         };
         this.mapSelectUI.onBack = () => {
             this.audio.play('menu_select');
+            if (this.isOnline) {
+                this._cleanupOnline();
+            }
             this.setState(STATES.MODE_SELECT);
         };
     }
@@ -268,16 +300,29 @@ export class Game {
 
         // Spawn positions
         const spawns = GridSystem.getSpawnPositions(mapDef);
-        const humanCount = this.gameMode === 'single' ? 1 : 2;
+        const humanCount = this.isOnline ? 2 : (this.gameMode === 'single' ? 1 : 2);
         const KEY_SETS = [P1_KEYS, P2_KEYS];
 
         // Create players on first round, reuse on subsequent
         if (this.players.length === 0) {
             for (let i = 0; i < 4; i++) {
-                const isNPC = i >= humanCount;
-                const keys = isNPC ? AI_KEYS
-                    : (this._isMobile && i === 0) ? AI_KEYS
-                    : KEY_SETS[i];
+                let isNPC, keys;
+
+                if (this.isOnline) {
+                    // Online: P1 + P2 are human, P3 + P4 are AI
+                    isNPC = i >= 2;
+                    // P2 on host uses NetworkInput (generic keys), P2 on client is remote-controlled
+                    keys = isNPC ? AI_KEYS
+                        : (i === 1) ? AI_KEYS  // P2 uses generic keys (fed by NetworkInput on host)
+                        : (this._isMobile && i === 0) ? AI_KEYS
+                        : P1_KEYS;
+                } else {
+                    isNPC = i >= humanCount;
+                    keys = isNPC ? AI_KEYS
+                        : (this._isMobile && i === 0) ? AI_KEYS
+                        : KEY_SETS[i];
+                }
+
                 const player = new Player(i + 1, PLAYER_COLORS[i], keys);
                 const brain = isNPC ? new AIBrain(i + 1) : null;
                 const aiInput = brain ? brain.aiInput : null;
@@ -334,6 +379,12 @@ export class Game {
 
     // ============ PLAYING ============
     updatePlaying(delta) {
+        // CLIENT: Don't run game logic. State is received from host via GameSync.
+        if (this.isOnline && this.isClient) {
+            this._updateClientVisuals(delta);
+            return;
+        }
+
         // Compute shared danger map once for all AI bots (optimization)
         const allPlayers = this.players.map(e => e.player);
         let sharedDangerMap = null;
@@ -350,9 +401,17 @@ export class Game {
 
         // Update all players
         for (const entry of this.players) {
-            const inputSource = entry.isNPC ? entry.aiInput
-                : (this._isMobile && entry.player.id === 1) ? this.touchControls
-                : this.input;
+            let inputSource;
+            if (this.isOnline && this.isHost && entry.player.id === 2) {
+                // Remote player on host — use NetworkInput
+                inputSource = this.networkInput;
+            } else if (entry.isNPC) {
+                inputSource = entry.aiInput;
+            } else if (this._isMobile && entry.player.id === 1) {
+                inputSource = this.touchControls;
+            } else {
+                inputSource = this.input;
+            }
             const bombAction = entry.player.update(delta, inputSource, this.gridSystem);
             if (bombAction) this.placeBomb(entry.player, bombAction.gridX, bombAction.gridZ);
         }
@@ -410,6 +469,11 @@ export class Game {
 
         // Check round end
         this.checkRoundEnd(delta);
+
+        // HOST: broadcast game state to client
+        if (this.isOnline && this.isHost && this.roomManager) {
+            this.gameSync.tickHost(delta, this, this.roomManager);
+        }
     }
 
     placeBomb(player, gridX, gridZ) {
@@ -514,7 +578,10 @@ export class Game {
 
     checkRoundEnd(delta) {
         const alivePlayers = this.players.filter(e => e.player.alive);
-        const aliveHumans = this.players.filter(e => !e.isNPC && e.player.alive);
+        // In online mode, "humans" = P1 + P2 (ids 1-2) regardless of isNPC flag
+        const aliveHumans = this.isOnline
+            ? this.players.filter(e => e.player.id <= 2 && e.player.alive)
+            : this.players.filter(e => !e.isNPC && e.player.alive);
 
         // Round ends when: <=1 player alive OR all human players are dead
         const shouldEnd = alivePlayers.length <= 1 || aliveHumans.length === 0;
@@ -546,6 +613,15 @@ export class Game {
 
     // ============ ROUND OVER ============
     setupRoundOver() {
+        // Broadcast round result to client
+        if (this.isOnline && this.isHost && this.roomManager) {
+            this.roomManager.broadcastGameEvent({
+                type: 'round_over',
+                winnerId: this._roundWinner || 0,
+                scores: this.scores,
+            });
+        }
+
         this.roundOverUI.showRoundOver(
             this._roundWinner || 0,
             this.scores,
@@ -554,12 +630,25 @@ export class Game {
         );
         this.roundOverUI.onNextRound = () => {
             this.audio.play('menu_select');
+            // Notify client of next round
+            if (this.isOnline && this.isHost && this.roomManager) {
+                this.roomManager.broadcastGameEvent({ type: 'next_round' });
+            }
             this.startNewRound();
         };
     }
 
     // ============ GAME OVER ============
     setupGameOver() {
+        // Broadcast game over to client
+        if (this.isOnline && this.isHost && this.roomManager) {
+            this.roomManager.broadcastGameEvent({
+                type: 'round_over',
+                winnerId: this._roundWinner || 0,
+                scores: this.scores,
+            });
+        }
+
         const maxScore = Math.max(...this.scores);
         const winnerId = this.scores.indexOf(maxScore) + 1;
         this.audio.play('win');
@@ -569,10 +658,14 @@ export class Game {
             this.scores = [0, 0, 0, 0];
             this.currentRound = 0;
             this.players = [];
+            if (this.isOnline && this.isHost && this.roomManager) {
+                this.roomManager.broadcastGameEvent({ type: 'next_round' });
+            }
             this.startNewRound();
         };
         this.roundOverUI.onMenu = () => {
             this.audio.play('menu_select');
+            this._cleanupOnline();
             this.setState(STATES.MENU);
         };
     }
@@ -609,12 +702,19 @@ export class Game {
     update(delta) {
         this.input.update();
         if (this.touchControls) this.touchControls.update();
+        if (this.isOnline && this.isHost) this.networkInput.update();
 
         // Update AI inputs
         for (const entry of this.players) {
             if (entry.isNPC && entry.aiInput) {
                 entry.aiInput.update();
             }
+        }
+
+        // Client: send local input to host
+        if (this.isOnline && this.isClient && this.roomManager &&
+            (this.state === STATES.PLAYING || this.state === STATES.COUNTDOWN)) {
+            this._sendClientInput();
         }
 
         switch (this.state) {
@@ -643,5 +743,219 @@ export class Game {
 
     render() {
         this.sceneManager.render();
+    }
+
+    // ============ ONLINE MULTIPLAYER ============
+
+    setupOnlineLobby() {
+        this.onlineLobbyUI.showLobbyChoice();
+
+        this.onlineLobbyUI.onCreateRoom = async () => {
+            this.roomManager = new RoomManager();
+            const code = await this.roomManager.createRoom();
+            this.isOnline = true;
+            this.isHost = true;
+            this.isClient = false;
+
+            this.onlineLobbyUI.showWaiting(code, true);
+            this._setupRoomCallbacks();
+        };
+
+        this.onlineLobbyUI.onJoinRoom = async (code) => {
+            this.roomManager = new RoomManager();
+            await this.roomManager.joinRoom(code);
+            this.isOnline = true;
+            this.isHost = false;
+            this.isClient = true;
+
+            this.onlineLobbyUI.showWaiting(code, false);
+            this._setupRoomCallbacks();
+        };
+
+        this.onlineLobbyUI.onBack = () => {
+            this._cleanupOnline();
+            this.setState(STATES.MODE_SELECT);
+        };
+
+        this.onlineLobbyUI.onCancel = () => {
+            this._cleanupOnline();
+            this.onlineLobbyUI.showLobbyChoice();
+        };
+    }
+
+    _setupRoomCallbacks() {
+        this.roomManager.onPeerJoin = () => {
+            this.onlineLobbyUI.showConnected(this.roomManager.roomCode);
+            this.audio.play('menu_select');
+
+            setTimeout(() => {
+                if (this.isHost) {
+                    // Host goes to map select
+                    this.onlineLobbyUI.hide();
+                    this.setState(STATES.MAP_SELECT);
+                } else {
+                    // Client waits for host's map selection
+                    this.onlineLobbyUI.showWaitingForHost('Host is selecting a map...');
+                }
+            }, 1000);
+        };
+
+        this.roomManager.onPeerLeave = () => {
+            if (this.state === STATES.PLAYING || this.state === STATES.COUNTDOWN ||
+                this.state === STATES.ROUND_OVER || this.state === STATES.GAME_OVER) {
+                // Show disconnect during active game
+                this.cleanupState();
+                this.onlineLobbyUI.showDisconnected('The other player left the game.');
+                this.onlineLobbyUI.onBack = () => {
+                    this._cleanupOnline();
+                    this.setState(STATES.MENU);
+                };
+            } else {
+                this._cleanupOnline();
+                this.setState(STATES.MENU);
+            }
+        };
+
+        // Client receives game state from host
+        this.roomManager.onGameState = (snapshot) => {
+            if (this.isClient && this.gameSync) {
+                // Handle state transitions from host
+                if (snapshot.state === STATES.PLAYING && this.state === STATES.COUNTDOWN) {
+                    this.setState(STATES.PLAYING);
+                    this.hud.show(this.currentRound, MAX_ROUNDS, this.scores, this.players);
+                }
+                this.gameSync.applyState(this, snapshot);
+                if (this.hud.element) this.hud.updateStats(this.players);
+            }
+        };
+
+        // Host receives remote player input
+        this.roomManager.onRemoteInput = (inputState) => {
+            if (this.isHost) {
+                this.networkInput.applyRemoteInput(inputState);
+            }
+        };
+
+        // Client receives map selection from host
+        this.roomManager.onMapSelected = (mapIndex) => {
+            if (this.isClient) {
+                this.selectedMapIndex = mapIndex;
+                this.currentRound = 0;
+                this.scores = [0, 0, 0, 0];
+                this.onlineLobbyUI.hide();
+                this.startNewRound();
+            }
+        };
+
+        // Client receives game events (round over, game over)
+        this.roomManager.onGameEvent = (event) => {
+            if (!this.isClient) return;
+            if (event.type === 'round_over') {
+                this._roundWinner = event.winnerId;
+                this.scores = event.scores;
+                this.checkGameOver();
+            } else if (event.type === 'next_round') {
+                this.startNewRound();
+            }
+        };
+
+        this.roomManager.onError = (msg) => {
+            this.onlineLobbyUI.showDisconnected(msg);
+            this.onlineLobbyUI.onBack = () => {
+                this._cleanupOnline();
+                this.setState(STATES.MENU);
+            };
+        };
+    }
+
+    _sendClientInput() {
+        const input = this._isMobile ? this.touchControls : this.input;
+        // Client always uses P1 controls locally
+        const keys = this._isMobile
+            ? { UP: 'UP', DOWN: 'DOWN', LEFT: 'LEFT', RIGHT: 'RIGHT', BOMB: 'BOMB' }
+            : P1_KEYS;
+
+        const state = {
+            keys: {
+                UP: input.isKeyDown(keys.UP),
+                DOWN: input.isKeyDown(keys.DOWN),
+                LEFT: input.isKeyDown(keys.LEFT),
+                RIGHT: input.isKeyDown(keys.RIGHT),
+                BOMB: input.isKeyDown(keys.BOMB),
+            },
+            pressed: [],
+        };
+
+        if (input.wasKeyPressed(keys.BOMB)) {
+            state.pressed.push('BOMB');
+        }
+
+        // Only send if changed (reduce bandwidth)
+        const stateStr = JSON.stringify(state);
+        if (stateStr !== this._lastSentInput) {
+            this._lastSentInput = stateStr;
+            this.roomManager.broadcastInput(state);
+        }
+    }
+
+    _updateClientVisuals(delta) {
+        // Client-only: run animations without game logic
+
+        // Death animations
+        for (const entry of this.players) {
+            const p = entry.player;
+            if (!p.alive && p.deathTimer > 0) {
+                p.deathTimer -= delta;
+                const s = Math.max(0, p.deathTimer / 0.5);
+                p.model.scale.set(s, s, s);
+                p.model.rotation.y += delta * 15;
+                if (p.deathTimer <= 0) p.model.visible = false;
+            }
+        }
+
+        // Bomb animations
+        for (const bomb of this.bombs) {
+            bomb.update(delta);
+        }
+
+        // Explosion animations
+        for (let i = this.explosions.length - 1; i >= 0; i--) {
+            if (this.explosions[i].update(delta)) {
+                this.explosions[i].dispose();
+                this.explosions.splice(i, 1);
+            }
+        }
+
+        // Block destruction animations
+        for (let i = this.blocks.length - 1; i >= 0; i--) {
+            if (this.blocks[i].update(delta)) {
+                this.blocks[i].dispose();
+                this.blocks.splice(i, 1);
+            }
+        }
+
+        // Power-up animations
+        for (const pu of this.powerUps) pu.update(delta);
+
+        // Particles and shake
+        this.particles.update(delta);
+        if (this._isMobile) this._updateMobileCamera();
+        this.shakeEffect.update(delta);
+
+        // HUD
+        this.hud.updateStats(this.players);
+    }
+
+    _cleanupOnline() {
+        if (this.roomManager) {
+            this.roomManager.destroy();
+            this.roomManager = null;
+        }
+        this.isOnline = false;
+        this.isHost = false;
+        this.isClient = false;
+        this.networkInput.reset();
+        this._lastSentInput = null;
+        this.onlineLobbyUI.hide();
     }
 }

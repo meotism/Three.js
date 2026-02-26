@@ -27,6 +27,11 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      - name: Inject Supabase config
+        run: |
+          sed -i "s|__SUPABASE_URL__|${{ secrets.SUPABASE_URL }}|g" js/net/SupabaseConfig.js
+          sed -i "s|__SUPABASE_ANON_KEY__|${{ secrets.SUPABASE_ANON_KEY }}|g" js/net/SupabaseConfig.js
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

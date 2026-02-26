@@ -1,9 +1,12 @@
+import { isOnlineAvailable } from '../net/SupabaseConfig.js';
+
 export class ModeSelectUI {
     constructor(container) {
         this.container = container;
         this.element = null;
         this.onSelectSingle = null;
         this.onSelectDouble = null;
+        this.onSelectOnline = null;
         this.onBack = null;
     }
 
@@ -38,6 +41,18 @@ export class ModeSelectUI {
                     </div>
                     <div class="mode-controls">P1: WASD + Space<br>P2: Arrows + Enter</div>
                 </div>
+                <div class="mode-card" id="mode-online">
+                    <div class="mode-icon">🌐</div>
+                    <div class="mode-name">Online</div>
+                    <div class="mode-desc">Play with a friend online</div>
+                    <div class="mode-players">
+                        <span class="mode-player-dot" style="background:#42a5f5;" title="P1 (You)"></span>
+                        <span class="mode-player-dot" style="background:#ef5350;" title="P2 (Friend)"></span>
+                        <span class="mode-player-dot ai" style="background:#66bb6a;" title="AI"></span>
+                        <span class="mode-player-dot ai" style="background:#ffa726;" title="AI"></span>
+                    </div>
+                    <div class="mode-controls">2 Players + 2 AI online</div>
+                </div>
             </div>
             <div class="mode-select-actions">
                 <button class="menu-btn" id="mode-back">BACK</button>
@@ -64,6 +79,16 @@ export class ModeSelectUI {
             doubleCard.addEventListener('click', () => {
                 if (this.onSelectDouble) this.onSelectDouble();
             });
+        }
+
+        const onlineCard = document.getElementById('mode-online');
+        if (isOnlineAvailable()) {
+            onlineCard.addEventListener('click', () => {
+                if (this.onSelectOnline) this.onSelectOnline();
+            });
+        } else {
+            onlineCard.classList.add('mode-card-disabled');
+            onlineCard.querySelector('.mode-controls').innerHTML = '⚠️ Not available in dev mode';
         }
 
         document.getElementById('mode-back').addEventListener('click', () => {
