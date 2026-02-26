@@ -38,10 +38,12 @@ jobs:
           sed -i "s|__SUPABASE_ANON_KEY__|${SUPA_KEY}|g" js/net/SupabaseConfig.js
           if grep -q "__SUPABASE" js/net/SupabaseConfig.js; then
             echo "::warning::Placeholders still present after injection!"
-            grep "__SUPABASE" js/net/SupabaseConfig.js
+            echo "url_injected=false" > deploy-status.txt
           else
             echo "Supabase config injected successfully"
+            echo "url_injected=true" > deploy-status.txt
           fi
+          echo "deploy_time=$(date -u +%Y%m%d%H%M%S)" >> deploy-status.txt
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
