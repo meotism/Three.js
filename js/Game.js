@@ -638,14 +638,20 @@ export class Game {
             this.currentRound,
             MAX_ROUNDS
         );
-        this.roundOverUI.onNextRound = () => {
-            this.audio.play('menu_select');
-            // Notify client of next round
-            if (this.isOnline && this.isHost && this.roomManager) {
-                this.roomManager.broadcastGameEvent({ type: 'next_round' });
-            }
-            this.startNewRound();
-        };
+
+        if (this.isOnline && this.isClient) {
+            // Client: hide button, show waiting for host
+            this.roundOverUI.showWaitingOverlay();
+        } else {
+            this.roundOverUI.onNextRound = () => {
+                this.audio.play('menu_select');
+                // Notify client of next round
+                if (this.isOnline && this.isHost && this.roomManager) {
+                    this.roomManager.broadcastGameEvent({ type: 'next_round' });
+                }
+                this.startNewRound();
+            };
+        }
     }
 
     // ============ GAME OVER ============
@@ -663,21 +669,32 @@ export class Game {
         const winnerId = this.scores.indexOf(maxScore) + 1;
         this.audio.play('win');
         this.roundOverUI.showGameOver(winnerId, this.scores);
-        this.roundOverUI.onRematch = () => {
-            this.audio.play('menu_select');
-            this.scores = [0, 0, 0, 0];
-            this.currentRound = 0;
-            this.players = [];
-            if (this.isOnline && this.isHost && this.roomManager) {
-                this.roomManager.broadcastGameEvent({ type: 'next_round' });
-            }
-            this.startNewRound();
-        };
-        this.roundOverUI.onMenu = () => {
-            this.audio.play('menu_select');
-            this._cleanupOnline();
-            this.setState(STATES.MENU);
-        };
+
+        if (this.isOnline && this.isClient) {
+            // Client: hide buttons, show waiting for host
+            this.roundOverUI.showWaitingOverlay();
+        } else {
+            this.roundOverUI.onRematch = () => {
+                this.audio.play('menu_select');
+                this.scores = [0, 0, 0, 0];
+                this.currentRound = 0;
+                this.players = [];
+                if (this.isOnline && this.isHost && this.roomManager) {
+                    // Tell client to show waiting screen, then go to map select
+                    this.roomManager.broadcastGameEvent({ type: 'rematch' });
+                    this.roundOverUI.hide();
+                    this.cleanupState();
+                    this.setState(STATES.MAP_SELECT);
+                } else {
+                    this.startNewRound();
+                }
+            };
+            this.roundOverUI.onMenu = () => {
+                this.audio.play('menu_select');
+                this._cleanupOnline();
+                this.setState(STATES.MENU);
+            };
+        }
     }
 
     // ============ MOBILE CAMERA FOLLOW ============
@@ -864,7 +881,16 @@ export class Game {
                 this.scores = event.scores;
                 this.checkGameOver();
             } else if (event.type === 'next_round') {
+                this.roundOverUI.hide();
                 this.startNewRound();
+            } else if (event.type === 'rematch') {
+                // Host chose rematch — show waiting while host picks map
+                this.roundOverUI.hide();
+                this.cleanupState();
+                this.scores = [0, 0, 0, 0];
+                this.currentRound = 0;
+                this.players = [];
+                this.onlineLobbyUI.showWaitingForHost('Host is selecting a map...');
             }
         };
 

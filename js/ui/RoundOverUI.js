@@ -68,6 +68,20 @@ export class RoundOverUI {
         });
     }
 
+    // Replace buttons with "Waiting for host..." for online client
+    showWaitingOverlay() {
+        if (!this.element) return;
+        const buttons = this.element.querySelector('.result-buttons');
+        if (buttons) {
+            buttons.innerHTML = `
+                <div class="online-waiting" style="margin-top:12px;">
+                    <div class="online-status">Waiting for host...</div>
+                    <div class="online-spinner"></div>
+                </div>
+            `;
+        }
+    }
+
     hide() {
         if (this.element) {
             this.element.remove();
