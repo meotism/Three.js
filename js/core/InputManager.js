@@ -27,6 +27,8 @@ export class InputManager {
         this._prevPressed = new Set();
 
         window.addEventListener('keydown', (e) => {
+            const tag = document.activeElement?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
             if (GAME_KEYS.has(e.code)) {
                 e.preventDefault();
             }

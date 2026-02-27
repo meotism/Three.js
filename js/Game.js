@@ -707,13 +707,21 @@ export class Game {
         }
     }
 
+    _getLocalPlayerIndex() {
+        if (this.isOnline && this.roomManager?.playerId) {
+            return this.roomManager.playerId - 1;
+        }
+        return 0;
+    }
+
     // ============ MOBILE CAMERA FOLLOW ============
     _updateMobileCamera() {
         const FOLLOW_HEIGHT = 7;   // units above ground
         const FOLLOW_Z_BACK = 5;   // units behind player
         const LERP = 0.1;          // per-frame lerp factor
 
-        const p1 = this.players[0]?.player;
+        const localIdx = this._getLocalPlayerIndex();
+        const p1 = this.players[localIdx]?.player;
         if (!p1 || !p1.alive) return;
 
         const px = p1.model.position.x;
