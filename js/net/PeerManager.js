@@ -3,20 +3,27 @@
  *
  * Star topology: host maintains one RTCPeerConnection per client.
  * Uses a Supabase broadcast channel for SDP/ICE signaling only.
- * All game data flows through unreliable/unordered DataChannels (UDP-like).
+ *
+ * Two DataChannels per peer:
+ *   - "game"    : unreliable/unordered (UDP-like) for high-frequency game state
+ *   - "control" : reliable/ordered (TCP-like) for critical one-time messages
  */
 export class PeerManager {
     constructor() {
         /** @type {Map<number, RTCPeerConnection>} playerId → connection */
         this.peers = new Map();
-        /** @type {Map<number, RTCDataChannel>} playerId → channel */
+        /** @type {Map<number, RTCDataChannel>} playerId → game channel (unreliable) */
         this.dataChannels = new Map();
+        /** @type {Map<number, RTCDataChannel>} playerId → control channel (reliable) */
+        this.controlChannels = new Map();
 
         this.isHost = false;
         this.localPlayerId = null;
 
         /** @type {Set<number>} playerIds with open DataChannels */
         this.readyPeers = new Set();
+        /** Track which channels are open per peer (need both to be "ready") */
+        this._openChannels = new Map(); // playerId → Set<'game'|'control'>
 
         // Supabase channel ref (signaling only)
         this._signalingChannel = null;
@@ -30,6 +37,22 @@ export class PeerManager {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
+                // Free TURN relays for mobile NAT traversal
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                },
             ],
         };
 
@@ -99,12 +122,17 @@ export class PeerManager {
         const pc = new RTCPeerConnection(this._iceConfig);
         this.peers.set(remotePlayerId, pc);
 
-        // Host creates the DataChannel
-        const dc = pc.createDataChannel('game', {
+        // Host creates both DataChannels
+        const gameDc = pc.createDataChannel('game', {
             ordered: false,
             maxRetransmits: 0,
         });
-        this._setupDataChannel(remotePlayerId, dc);
+        this._setupDataChannel(remotePlayerId, gameDc, 'game');
+
+        const controlDc = pc.createDataChannel('control', {
+            ordered: true, // reliable & ordered
+        });
+        this._setupDataChannel(remotePlayerId, controlDc, 'control');
 
         this._setupIceAndState(pc, remotePlayerId);
 
@@ -126,9 +154,10 @@ export class PeerManager {
         const pc = new RTCPeerConnection(this._iceConfig);
         this.peers.set(fromPlayerId, pc);
 
-        // Client receives the DataChannel from host
+        // Client receives DataChannels from host
         pc.ondatachannel = (event) => {
-            this._setupDataChannel(fromPlayerId, event.channel);
+            const label = event.channel.label; // 'game' or 'control'
+            this._setupDataChannel(fromPlayerId, event.channel, label);
         };
 
         this._setupIceAndState(pc, fromPlayerId);
@@ -208,21 +237,38 @@ export class PeerManager {
         };
     }
 
-    _setupDataChannel(playerId, channel) {
-        this.dataChannels.set(playerId, channel);
+    _setupDataChannel(playerId, channel, label) {
+        if (label === 'control') {
+            this.controlChannels.set(playerId, channel);
+        } else {
+            this.dataChannels.set(playerId, channel);
+        }
 
         channel.onopen = () => {
-            this.readyPeers.add(playerId);
-            if (this.onPeerConnected) this.onPeerConnected(playerId);
+            if (!this._openChannels.has(playerId)) {
+                this._openChannels.set(playerId, new Set());
+            }
+            this._openChannels.get(playerId).add(label);
+
+            // Peer is ready only when BOTH channels are open
+            if (this._openChannels.get(playerId).size >= 2) {
+                this.readyPeers.add(playerId);
+                if (this.onPeerConnected) this.onPeerConnected(playerId);
+            }
         };
 
         channel.onclose = () => {
-            this.readyPeers.delete(playerId);
-            if (this.onPeerDisconnected) this.onPeerDisconnected(playerId);
+            if (this._openChannels.has(playerId)) {
+                this._openChannels.get(playerId).delete(label);
+            }
+            if (this.readyPeers.has(playerId)) {
+                this.readyPeers.delete(playerId);
+                if (this.onPeerDisconnected) this.onPeerDisconnected(playerId);
+            }
         };
 
         channel.onerror = (err) => {
-            console.error(`[PeerManager] DataChannel error with player ${playerId}:`, err);
+            console.error(`[PeerManager] DataChannel (${label}) error with player ${playerId}:`, err);
         };
 
         channel.onmessage = (event) => {
@@ -237,11 +283,13 @@ export class PeerManager {
 
     _handlePeerFailure(playerId) {
         this.readyPeers.delete(playerId);
+        this._openChannels.delete(playerId);
         if (this.onPeerDisconnected) this.onPeerDisconnected(playerId);
     }
 
     // ---- Sending ----
 
+    /** Send on unreliable game channel (high-frequency state) */
     send(playerId, messageObj) {
         const dc = this.dataChannels.get(playerId);
         if (dc && dc.readyState === 'open') {
@@ -249,9 +297,28 @@ export class PeerManager {
         }
     }
 
+    /** Send on reliable control channel (critical one-time messages) */
+    sendReliable(playerId, messageObj) {
+        const dc = this.controlChannels.get(playerId);
+        if (dc && dc.readyState === 'open') {
+            dc.send(JSON.stringify(messageObj));
+        }
+    }
+
+    /** Broadcast on unreliable game channel */
     broadcast(messageObj) {
         const data = JSON.stringify(messageObj);
         for (const [, dc] of this.dataChannels) {
+            if (dc.readyState === 'open') {
+                dc.send(data);
+            }
+        }
+    }
+
+    /** Broadcast on reliable control channel */
+    broadcastReliable(messageObj) {
+        const data = JSON.stringify(messageObj);
+        for (const [, dc] of this.controlChannels) {
             if (dc.readyState === 'open') {
                 dc.send(data);
             }
@@ -266,12 +333,18 @@ export class PeerManager {
             dc.close();
             this.dataChannels.delete(playerId);
         }
+        const cc = this.controlChannels.get(playerId);
+        if (cc) {
+            cc.close();
+            this.controlChannels.delete(playerId);
+        }
         const pc = this.peers.get(playerId);
         if (pc) {
             pc.close();
             this.peers.delete(playerId);
         }
         this.readyPeers.delete(playerId);
+        this._openChannels.delete(playerId);
     }
 
     destroy() {

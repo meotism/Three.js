@@ -871,7 +871,7 @@ export class Game {
                 // If game already started, resend map info to late-connecting peer
                 if (this.state !== STATES.ONLINE_LOBBY && this.state !== STATES.MAP_SELECT
                     && this.selectedMapIndex !== undefined) {
-                    this.roomManager.peerManager.send(playerId, {
+                    this.roomManager.peerManager.sendReliable(playerId, {
                         event: 'map_selected',
                         payload: { mapIndex: this.selectedMapIndex, humanCount: this.onlineHumanCount },
                     });

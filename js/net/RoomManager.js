@@ -213,14 +213,16 @@ export class RoomManager {
     broadcastMapSelected(mapIndex, humanCount) {
         if (!this.isHost) return;
         if (this.peerManager && this.peerManager.readyPeers.size > 0) {
-            this.peerManager.broadcast({ event: 'map_selected', payload: { mapIndex, humanCount } });
+            // Use reliable channel — this is a critical one-time message
+            this.peerManager.broadcastReliable({ event: 'map_selected', payload: { mapIndex, humanCount } });
         }
     }
 
     broadcastGameEvent(event) {
         if (!this.isHost) return;
         if (this.peerManager && this.peerManager.readyPeers.size > 0) {
-            this.peerManager.broadcast({ event: 'game_event', payload: event });
+            // Use reliable channel — round_over/next_round must not be lost
+            this.peerManager.broadcastReliable({ event: 'game_event', payload: event });
         }
     }
 
