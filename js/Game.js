@@ -860,6 +860,25 @@ export class Game {
             this.onlineLobbyUI.updatePlayerCount(count);
         };
 
+        // DataChannel is open — P2P connection is truly ready
+        this.roomManager.onPeerReady = (playerId) => {
+            if (this.isHost) {
+                // Only enable START when DataChannel is actually open
+                this.onlineLobbyUI.setStartEnabled(
+                    this.roomManager.peerManager.readyPeers.size >= 1
+                );
+
+                // If game already started, resend map info to late-connecting peer
+                if (this.state !== STATES.ONLINE_LOBBY && this.state !== STATES.MAP_SELECT
+                    && this.selectedMapIndex !== undefined) {
+                    this.roomManager.peerManager.send(playerId, {
+                        event: 'map_selected',
+                        payload: { mapIndex: this.selectedMapIndex, humanCount: this.onlineHumanCount },
+                    });
+                }
+            }
+        };
+
         this.roomManager.onPeerLeave = () => {
             if (this.state === STATES.PLAYING || this.state === STATES.COUNTDOWN ||
                 this.state === STATES.ROUND_OVER || this.state === STATES.GAME_OVER) {

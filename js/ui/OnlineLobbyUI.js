@@ -146,11 +146,13 @@ export class OnlineLobbyUI {
         if (el) {
             el.textContent = `Players: ${count} / 4`;
         }
+    }
 
-        // Enable START button when 2+ players
+    // Enable/disable START button (gate on DataChannel readiness, not presence)
+    setStartEnabled(enabled) {
         const startBtn = this.element?.querySelector('#host-start');
         if (startBtn) {
-            startBtn.disabled = count < 2;
+            startBtn.disabled = !enabled;
         }
     }
 

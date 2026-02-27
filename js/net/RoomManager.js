@@ -27,6 +27,7 @@ export class RoomManager {
         this.onGameEvent = null;
         this.onError = null;
         this.onPlayerAssigned = null; // client receives assigned playerId
+        this.onPeerReady = null; // DataChannel opened (playerId)
     }
 
     _initClient() {
@@ -95,6 +96,10 @@ export class RoomManager {
                     if (!this.isHost && this.onGameEvent) this.onGameEvent(msg.payload);
                     break;
             }
+        };
+
+        this.peerManager.onPeerConnected = (playerId) => {
+            if (this.onPeerReady) this.onPeerReady(playerId);
         };
 
         this.peerManager.onPeerDisconnected = (playerId) => {
